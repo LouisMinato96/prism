@@ -1,0 +1,6 @@
+# Bun runtime configuration
+[install]
+exact = false
+
+[test]
+preload = []
