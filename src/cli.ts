@@ -9,7 +9,9 @@ import { runClassify } from "./stages/classify.ts";
 import { runReviews, retryIncomplete } from "./stages/review.ts";
 import { runCoverage } from "./stages/coverage.ts";
 import { runAggregate } from "./stages/aggregate.ts";
+import { runArchitecture } from "./stages/architecture.ts";
 import type { FileUnits } from "./schemas/index.ts";
+import type { PrMeta } from "./lib/gh.ts";
 
 function usage(): never {
   console.log(`prism — deterministic LLM-orchestrated PR review harness
@@ -19,7 +21,7 @@ USAGE:
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
-  --force-stage <name> Force re-run of a single stage (fetch|enumerate|classify|review|coverage|aggregate)
+  --force-stage <name> Force re-run of a single stage (fetch|enumerate|classify|review|coverage|aggregate|architecture)
   --post               Post the final report as a PR comment via gh
   --edit               Edit the last prism comment instead of posting a new one
   --resume             Default behavior: skip stages with existing output
@@ -113,7 +115,13 @@ async function main() {
     },
   );
 
-  // Stage 7: post to GitHub
+  // Stage 7: architecture diagram
+  const meta = (await Bun.file(wd.metaFile()).json()) as PrMeta;
+  await runArchitecture(wd, reviews, coverage, routing, meta, {
+    force: isForced("architecture"),
+  });
+
+  // Stage 8: post to GitHub
   if (values.post || values.edit) {
     const fn = values.edit ? editPrComment : postPrComment;
     const verb = values.edit ? "editing" : "posting";
@@ -130,6 +138,7 @@ async function main() {
     "summary",
   );
   log.done(wd.finalReport(), "report");
+  log.done(wd.architectureReport(), "architecture");
 }
 
 main().catch((err: Error) => {

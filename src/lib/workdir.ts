@@ -25,6 +25,7 @@ export class Workdir {
   filesList = () => join(this.raw(), "files.txt");
   routingFile = () => join(this.raw(), "routing.json");
   finalReport = () => join(this.final(), `pr-review-${this.pr}.md`);
+  architectureReport = () => join(this.final(), `pr-architecture-${this.pr}.md`);
 
   unitsFor = (file: string) => join(this.units(), `${this.safe(file)}.json`);
 
