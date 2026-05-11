@@ -2,7 +2,7 @@
 
 A deterministic LLM-orchestrated PR review harness.
 
-`prism` runs a fixed pipeline of stages over a GitHub pull request, calls Claude for each judgment-requiring step, and guarantees that every reviewable unit (function, component, hook, class, method) is analyzed by every reviewer it's routed to. Coverage is enforced — not scored.
+`prism` runs a fixed pipeline of stages over a GitHub pull request, calls Claude for each judgment-requiring step, and verifies completed reviews against deterministic AST-derived reviewable units. Coverage is enforced from code metadata, not accepted from LLM self-report.
 
 ## Why
 
@@ -16,15 +16,15 @@ LLM PR reviews are usually one shot, vague, and miss things. `prism` makes them:
 ## Architecture
 
 ```
-fetch  →  enumerate  →  classify  →  review  →  coverage  →  aggregate  →  post
- (gh)      (ts-morph)    (claude)    (claude×N)  (pure logic)  (claude)     (gh)
+fetch  →  enumerate  →  classify  →  review  →  coverage  →  aggregate  →  architecture  →  post
+ (gh)      (ts-morph)    (claude)    (claude×N)  (pure logic)  (claude)       (claude)        (gh)
 ```
 
 Each stage:
 
 - Reads its inputs from disk.
 - Writes its outputs to disk.
-- Skips if its output already exists (`--force` to override).
+- Skips cacheable outputs if they already exist (`--force` to override).
 
 The reviewer fan-out runs in parallel (`PRISM_CONCURRENCY=4` by default).
 
@@ -32,19 +32,19 @@ The reviewer fan-out runs in parallel (`PRISM_CONCURRENCY=4` by default).
 
 The enumerate stage walks each TS/JS file's AST and extracts reviewable units:
 
-| Kind        | Detection rule                              |
-| ----------- | ------------------------------------------- |
-| `function`  | Function declarations, arrow/function exprs |
-| `component` | PascalCase function returning JSX           |
-| `hook`      | Function named `use*` (e.g. `useAuth`)      |
-| `class`     | Class declarations                          |
-| `method`    | Class methods, named `ClassName.methodName` |
+| Kind        | Detection rule                                |
+| ----------- | --------------------------------------------- |
+| `function`  | Function declarations and arrow/function exprs |
+| `component` | PascalCase function returning JSX             |
+| `hook`      | Function named `use*` (for example `useAuth`) |
+| `class`     | Class declarations                            |
+| `method`    | Class methods, named `ClassName.methodName`   |
 
-Non-TS/JS files (markdown, JSON, etc.) are routed at file granularity.
+Files without extractable TS/JS units are recorded in `units/` with `units: null` and a reason. The current review fan-out only runs for files with extracted units, so non-TS/JS file-level review is not implemented yet.
 
 ### Reviewer input
 
-Each reviewer receives:
+Each reviewer receives one task per routed `(file, reviewer)` pair with extracted units:
 
 - **UNITS TO ANALYZE** — unit metadata (kind, name, line, span)
 - **DIFF** — per-file unified diff showing what changed
@@ -52,7 +52,9 @@ Each reviewer receives:
 
 ### Coverage retry loop
 
-After the first review pass, coverage is computed by comparing `units_analyzed` against the ground-truth unit list. If any units are missing, the reviewer is re-invoked with feedback listing the missed units. Results are merged and coverage is recomputed. This repeats up to `PRISM_MAX_ITER` times.
+After the first review pass, coverage is computed by comparing `units_analyzed` against the ground-truth unit names for each completed review. If any units are missing, the reviewer is re-invoked with feedback listing the missed units. Results are merged and coverage is recomputed. This repeats up to `PRISM_MAX_ITER` times.
+
+Review tasks that fail before producing a valid review JSON are tracked in `tasks/`, but they do not currently produce a `coverage/` JSON entry.
 
 ## Setup
 
@@ -81,7 +83,8 @@ Output lands in `./.tmp/pr-1234/`:
 ├── coverage/        # per-(file, reviewer) coverage JSON
 ├── tasks/           # per-task status (the tracker)
 └── final/
-    └── pr-review-1234.md
+    ├── pr-review-1234.md
+    └── pr-architecture-1234.md
 ```
 
 ## Resuming after failure
@@ -91,6 +94,8 @@ prism review 1234              # default: skip stages with existing output
 prism review 1234 --force      # re-run everything
 prism review 1234 --force-stage review   # re-run one stage
 ```
+
+`--force-stage` accepts `fetch`, `enumerate`, `classify`, `review`, `coverage`, `aggregate`, or `architecture`. The `coverage` stage is pure logic and is recomputed during the normal pipeline run.
 
 ## Configuration
 
