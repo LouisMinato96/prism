@@ -28,14 +28,37 @@ Use the diff to understand what changed. Use the source to understand surroundin
 
 ## Your task
 
-Analyze every unit. For each, identify:
+Analyze **every unit** in the input. For each, identify:
 
 - Patterns present (with severity `info` and category `pattern:<name>`)
 - Pattern misuse (severity `medium` or `high`, category `antipattern:<name>`)
-- Patterns that *should* be used but aren't (severity `low`)
+- Patterns that _should_ be used but aren't (severity `low`)
 
-Coverage is mandatory.
+Even if a unit has no pattern concerns, include it in `units_analyzed` with no findings (or an `info`-severity finding stating "no pattern concerns identified").
+
+Coverage is mandatory: skipping units is a failure.
 
 ## Output
 
-Output JSON only matching the Review schema. No prose, no markdown fences.
+Output JSON only, matching this schema:
+
+```json
+{
+  "file": "src/services/UserService.ts",
+  "reviewer": "patterns",
+  "units_analyzed": [{ "kind": "function", "name": "createUser", "line": 15 }],
+  "findings": [
+    {
+      "unit": "createUser",
+      "severity": "medium",
+      "category": "antipattern:god-object",
+      "line": 22,
+      "issue": "Function handles validation, persistence, and notification — three distinct responsibilities behind one entry point.",
+      "suggestion": "Extract a validation strategy and use an observer for notifications."
+    }
+  ],
+  "iteration": 0
+}
+```
+
+Output JSON only. No prose, no markdown fences.

@@ -1,4 +1,4 @@
-import { writeFile, readFile, readdir } from "node:fs/promises";
+import { writeFile, readFile, readdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Workdir } from "./workdir.ts";
@@ -23,7 +23,7 @@ export class Tracker {
     const path = this.wd.taskStatusFor(rec.file, rec.reviewer);
     const tmp = `${path}.tmp`;
     await writeFile(tmp, JSON.stringify(rec, null, 2));
-    await Bun.write(path, await Bun.file(tmp).text());
+    await rename(tmp, path);
   }
 
   async read(file: string, reviewer: string): Promise<TaskRecord | null> {

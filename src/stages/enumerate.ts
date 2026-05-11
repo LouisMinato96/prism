@@ -77,14 +77,14 @@ export async function runEnumerate(
     }
 
     if (units.length === 0) {
-      units = [
-        {
-          kind: "function",
-          name: `<file:${file}>`,
-          line: 1,
-          span: [1, 1],
-        },
-      ];
+      const result: FileUnits = {
+        file,
+        units: null,
+        reason: "no extractable units (type-only or constant-only file)",
+      };
+      await writeFile(outPath, JSON.stringify(result, null, 2));
+      results.push(result);
+      continue;
     }
 
     const result: FileUnits = { file, units };

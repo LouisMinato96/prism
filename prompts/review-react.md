@@ -26,10 +26,31 @@ Use the diff to understand what changed. Use the source to understand surroundin
 
 ## Your task
 
-Analyze every unit, especially components and hooks.
+Analyze **every unit** in the input. Even if a unit has no React concerns, include it in `units_analyzed` with no findings (or an `info`-severity finding stating "no React concerns identified").
 
-Coverage is mandatory.
+Coverage is mandatory: skipping units is a failure.
 
 ## Output
 
-Output JSON only matching the Review schema. No prose, no markdown fences.
+Output JSON only, matching this schema:
+
+```json
+{
+  "file": "src/components/Foo.tsx",
+  "reviewer": "react",
+  "units_analyzed": [{ "kind": "component", "name": "Foo", "line": 12 }],
+  "findings": [
+    {
+      "unit": "Foo",
+      "severity": "medium",
+      "category": "stale-closure",
+      "line": 25,
+      "issue": "useEffect depends on `count` but it is not in the dependency array.",
+      "suggestion": "Add `count` to the deps array or use a ref."
+    }
+  ],
+  "iteration": 0
+}
+```
+
+Output JSON only. No prose, no markdown fences.

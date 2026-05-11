@@ -39,8 +39,8 @@ export async function runReviews(
   const tasks: ReviewTask[] = [];
   for (const route of routing.routes) {
     const units = unitsByFile.get(route.file);
-    if (!units) {
-      log.warn(`no units for ${route.file}, skipping`, stage);
+    if (!units || units.units === null || units.units.length === 0) {
+      log.warn(`no reviewable units for ${route.file}, skipping`, stage);
       continue;
     }
     for (const reviewer of route.reviewers) {

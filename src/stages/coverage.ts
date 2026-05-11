@@ -13,6 +13,30 @@ export async function runCoverage(
 
   for (const review of reviews) {
     const units = unitsByFile.get(review.file);
+
+    const isPlaceholderOnly =
+      units?.units != null &&
+      units.units.length > 0 &&
+      units.units.every((u) => u.name.startsWith("<file:"));
+
+    if (isPlaceholderOnly) {
+      const cov: Coverage = {
+        file: review.file,
+        reviewer: review.reviewer,
+        total: 0,
+        covered: 0,
+        missing: [],
+        complete: true,
+        iteration: review.iteration,
+      };
+      results.push(cov);
+      await writeFile(
+        wd.coverageFor(review.file, review.reviewer),
+        JSON.stringify(cov, null, 2),
+      );
+      continue;
+    }
+
     if (!units || units.units === null) {
       const cov: Coverage = {
         file: review.file,

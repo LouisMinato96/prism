@@ -65,8 +65,12 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<T> {
   const tag = opts.tag ?? "claude";
 
   let lastError: string | null = null;
+  let consecutiveSchemaFailures = 0;
+  const startTime = performance.now();
+  let attempts = 0;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    attempts++;
     const prompt = buildPrompt(promptTemplate, opts.extraContext, lastError);
 
     log.debug(`attempt ${attempt + 1}/${maxRetries} (input ${opts.input.length}b)`, tag);
@@ -77,12 +81,14 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<T> {
     } catch (err) {
       lastError = `spawn failed: ${(err as Error).message}`;
       log.warn(lastError, tag);
+      consecutiveSchemaFailures = 0;
       continue;
     }
 
     if (result.exitCode !== 0) {
       lastError = `claude exited ${result.exitCode}: ${result.stderr.slice(0, 500)}`;
       log.warn(lastError, tag);
+      consecutiveSchemaFailures = 0;
       continue;
     }
 
@@ -90,6 +96,7 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<T> {
     if (!jsonText) {
       lastError = `no JSON found in output. First 300 chars: ${result.stdout.slice(0, 300)}`;
       log.warn(lastError, tag);
+      consecutiveSchemaFailures = 0;
       continue;
     }
 
@@ -99,22 +106,68 @@ export async function callClaude<T>(opts: CallClaudeOpts<T>): Promise<T> {
     } catch (err) {
       lastError = `JSON.parse failed: ${(err as Error).message}. Text: ${jsonText.slice(0, 300)}`;
       log.warn(lastError, tag);
+      consecutiveSchemaFailures = 0;
       continue;
     }
 
     const validation = opts.schema.safeParse(parsed);
     if (!validation.success) {
+      consecutiveSchemaFailures++;
       lastError = `schema validation failed: ${JSON.stringify(validation.error.issues, null, 2)}`;
-      log.warn(`validation failed (attempt ${attempt + 1})`, tag);
+      log.warn(
+        `validation failed (attempt ${attempt + 1}, ${consecutiveSchemaFailures} consecutive)`,
+        tag,
+      );
+
+      if (consecutiveSchemaFailures >= 2) {
+        recordMetric(tag, attempts, startTime, false);
+        throw new Error(
+          `callClaude(${tag}) fast-failed: ${consecutiveSchemaFailures} consecutive schema validation failures.\nLast error:\n${lastError}`,
+        );
+      }
       continue;
     }
 
+    recordMetric(tag, attempts, startTime, true);
     return validation.data;
   }
 
+  recordMetric(tag, attempts, startTime, false);
   throw new Error(
     `callClaude(${tag}) exhausted ${maxRetries} retries.\nLast error:\n${lastError}`,
   );
+}
+
+export interface CallMetrics {
+  tag: string;
+  attempts: number;
+  durationMs: number;
+  success: boolean;
+}
+
+const allMetrics: CallMetrics[] = [];
+
+function recordMetric(
+  tag: string,
+  attempts: number,
+  startTime: number,
+  success: boolean,
+): void {
+  allMetrics.push({
+    tag,
+    attempts,
+    durationMs: Math.round(performance.now() - startTime),
+    success,
+  });
+}
+
+export function getMetricsSummary() {
+  const totalCalls = allMetrics.length;
+  const totalAttempts = allMetrics.reduce((n, m) => n + m.attempts, 0);
+  const successes = allMetrics.filter((m) => m.success).length;
+  const failures = totalCalls - successes;
+  const totalDurationMs = allMetrics.reduce((n, m) => n + m.durationMs, 0);
+  return { totalCalls, totalAttempts, successes, failures, totalDurationMs };
 }
 
 function buildPrompt(

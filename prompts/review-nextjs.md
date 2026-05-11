@@ -26,10 +26,31 @@ Use the diff to understand what changed. Use the source to understand surroundin
 
 ## Your task
 
-Analyze every unit through a Next.js lens.
+Analyze **every unit** in the input through a Next.js lens. Even if a unit has no Next.js concerns, include it in `units_analyzed` with no findings (or an `info`-severity finding stating "no Next.js concerns identified").
 
-Coverage is mandatory.
+Coverage is mandatory: skipping units is a failure.
 
 ## Output
 
-Output JSON only matching the Review schema. No prose, no markdown fences.
+Output JSON only, matching this schema:
+
+```json
+{
+  "file": "src/app/dashboard/page.tsx",
+  "reviewer": "nextjs",
+  "units_analyzed": [{ "kind": "component", "name": "DashboardPage", "line": 8 }],
+  "findings": [
+    {
+      "unit": "DashboardPage",
+      "severity": "high",
+      "category": "missing-use-client",
+      "line": 1,
+      "issue": "Component uses useState but lacks 'use client' directive.",
+      "suggestion": "Add 'use client' at the top of the file or move state to a client component."
+    }
+  ],
+  "iteration": 0
+}
+```
+
+Output JSON only. No prose, no markdown fences.

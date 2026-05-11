@@ -33,9 +33,7 @@ Output JSON only, matching this schema:
 {
   "file": "src/components/Foo.tsx",
   "reviewer": "solid",
-  "units_analyzed": [
-    { "kind": "function", "name": "handleSubmit", "line": 78 }
-  ],
+  "units_analyzed": [{ "kind": "function", "name": "handleSubmit", "line": 78 }],
   "findings": [
     {
       "unit": "handleSubmit",

@@ -4,6 +4,7 @@ import { log } from "./lib/log.ts";
 import { config } from "./config.ts";
 import { runFetch } from "./stages/fetch.ts";
 import { postPrComment, editPrComment } from "./lib/gh.ts";
+import { getMetricsSummary } from "./lib/claude.ts";
 import { runEnumerate } from "./stages/enumerate.ts";
 import { runClassify } from "./stages/classify.ts";
 import { runReviews, retryIncomplete } from "./stages/review.ts";
@@ -95,9 +96,36 @@ async function main() {
 
   // Stage 5: coverage check + retry loop
   let coverage = await runCoverage(wd, reviews, unitsByFile);
+
+  // Detect systematically-broken reviewers (0% success rate)
+  const reviewerStats = new Map<string, { success: number; total: number }>();
+  for (const route of routing.routes) {
+    for (const reviewer of route.reviewers) {
+      const stats = reviewerStats.get(reviewer) ?? { success: 0, total: 0 };
+      stats.total++;
+      if (reviews.some((r) => r.file === route.file && r.reviewer === reviewer)) {
+        stats.success++;
+      }
+      reviewerStats.set(reviewer, stats);
+    }
+  }
+  const brokenReviewers = new Set<string>();
+  for (const [reviewer, stats] of reviewerStats) {
+    if (stats.success === 0 && stats.total >= 3) {
+      log.warn(
+        `reviewer "${reviewer}" 0/${stats.total} success — skipping retries`,
+        "retry",
+      );
+      brokenReviewers.add(reviewer);
+    }
+  }
+
   let iter = 0;
   while (iter < config.maxCoverageIterations && coverage.some((c) => !c.complete)) {
-    const incomplete = coverage.filter((c) => !c.complete);
+    const incomplete = coverage
+      .filter((c) => !c.complete)
+      .filter((c) => !brokenReviewers.has(c.reviewer));
+    if (incomplete.length === 0) break;
     log.step(`iteration ${iter + 1}: ${incomplete.length} incomplete`, "retry");
     reviews = await retryIncomplete(wd, reviews, incomplete, unitsByFile, iter + 1);
     coverage = await runCoverage(wd, reviews, unitsByFile);
@@ -139,6 +167,15 @@ async function main() {
   );
   log.done(wd.finalReport(), "report");
   log.done(wd.architectureReport(), "architecture");
+
+  // Metrics
+  const metrics = getMetricsSummary();
+  log.info(
+    `API: ${metrics.totalCalls} calls (${metrics.totalAttempts} attempts), ` +
+      `${metrics.successes} ok, ${metrics.failures} failed, ` +
+      `${(metrics.totalDurationMs / 1000).toFixed(1)}s total`,
+    "metrics",
+  );
 }
 
 main().catch((err: Error) => {

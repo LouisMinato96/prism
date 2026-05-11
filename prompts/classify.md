@@ -15,6 +15,9 @@ Skip:
 - Generated files (`*.gen.*`, `*.generated.*`)
 - Pure config (`*.config.json`, lockfiles)
 - Type-only declaration files (`*.d.ts`)
+- Type-only files (`*.types.ts`, `*.types.tsx`) — no reviewable logic
+- Constant-only files (`*.constants.ts`, `*.constants.tsx`) — no reviewable logic
+- Barrel exports (`index.ts`, `index.tsx` that only re-export)
 
 ## Output
 
@@ -23,11 +26,13 @@ Output JSON only, matching this schema:
 ```json
 {
   "routes": [
-    { "file": "src/components/Foo.tsx", "reviewers": ["react", "solid"], "rationale": "React component with logic" }
+    {
+      "file": "src/components/Foo.tsx",
+      "reviewers": ["react", "solid"],
+      "rationale": "React component with logic"
+    }
   ],
-  "skipped": [
-    { "file": "src/foo.test.ts", "reason": "test file" }
-  ]
+  "skipped": [{ "file": "src/foo.test.ts", "reason": "test file" }]
 }
 ```
 
