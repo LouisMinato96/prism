@@ -85,6 +85,43 @@ export const AnalyzeSymbolsSchema = z.object({
 });
 export type AnalyzeSymbols = z.infer<typeof AnalyzeSymbolsSchema>;
 
+export const AnalyzeRepoIndexSymbolTypeSchema = AnalyzeNodeTypeSchema.exclude(["file"]);
+export type AnalyzeRepoIndexSymbolType = z.infer<typeof AnalyzeRepoIndexSymbolTypeSchema>;
+
+export const AnalyzeRepoIndexSymbolSchema = z.object({
+  id: z.string(),
+  type: AnalyzeRepoIndexSymbolTypeSchema,
+  name: z.string(),
+  line: z.number().int().positive(),
+  exported: z.boolean(),
+});
+export type AnalyzeRepoIndexSymbol = z.infer<typeof AnalyzeRepoIndexSymbolSchema>;
+
+export const AnalyzeRepoIndexFileSchema = z.object({
+  path: z.string(),
+  symbolCount: z.number().int().nonnegative(),
+  exportedSymbolCount: z.number().int().nonnegative(),
+  typeCounts: z.record(AnalyzeRepoIndexSymbolTypeSchema, z.number().int().nonnegative()),
+  symbols: z.array(AnalyzeRepoIndexSymbolSchema),
+  exportedSymbols: z.array(z.string()),
+});
+export type AnalyzeRepoIndexFile = z.infer<typeof AnalyzeRepoIndexFileSchema>;
+
+export const AnalyzeRepoIndexSchema = z.object({
+  entry: z.string(),
+  generatedFrom: z.object({
+    scope: z.string(),
+    symbols: z.string(),
+  }),
+  fileCount: z.number().int().nonnegative(),
+  symbolCount: z.number().int().nonnegative(),
+  typeCounts: z.record(AnalyzeRepoIndexSymbolTypeSchema, z.number().int().nonnegative()),
+  files: z.array(AnalyzeRepoIndexFileSchema),
+  entryFileSymbols: z.array(AnalyzeRepoIndexSymbolSchema),
+  entryFileExportedSymbols: z.array(z.string()),
+});
+export type AnalyzeRepoIndex = z.infer<typeof AnalyzeRepoIndexSchema>;
+
 export const AnalyzeNodeSchema = z.object({
   id: z.string(),
   type: AnalyzeNodeTypeSchema,

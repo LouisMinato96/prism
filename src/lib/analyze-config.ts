@@ -3,21 +3,31 @@ import { isAbsolute, resolve } from "node:path";
 
 export interface AnalyzeConfigDefaults {
   entry?: string;
+  entries?: AnalyzeConfigEntry[];
   depth?: number;
+  maxFiles?: number;
   include?: string;
   exclude?: string;
+}
+
+export interface AnalyzeConfigEntry {
+  path: string;
+  name: string;
 }
 
 export interface AnalyzeCliOverrides {
   entry?: string;
   depth?: string;
+  maxFiles?: string;
   include?: string;
   exclude?: string;
 }
 
 export interface ResolvedAnalyzeInput {
   entry?: string;
+  entries: AnalyzeConfigEntry[];
   depth?: string;
+  maxFiles?: string;
   include?: string;
   exclude?: string;
 }
@@ -53,7 +63,14 @@ export function parseAnalyzeConfigObject(
     throw new Error(`invalid analyze config at ${source}: expected an object`);
   }
 
-  const allowedKeys = new Set(["entry", "depth", "include", "exclude"]);
+  const allowedKeys = new Set([
+    "entry",
+    "entries",
+    "depth",
+    "maxFiles",
+    "include",
+    "exclude",
+  ]);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) {
       throw new Error(`invalid analyze config at ${source}: unknown key "${key}"`);
@@ -61,13 +78,24 @@ export function parseAnalyzeConfigObject(
   }
 
   const config: AnalyzeConfigDefaults = {};
-  if (value.entry !== undefined) {
+  const hasEntry = value.entry !== undefined;
+  const hasEntries = value.entries !== undefined;
+  if (hasEntry && hasEntries) {
+    throw new Error(
+      `invalid analyze config at ${source}: "entry" and "entries" cannot both be set`,
+    );
+  }
+
+  if (hasEntry) {
     if (typeof value.entry !== "string" || value.entry.trim().length === 0) {
       throw new Error(
         `invalid analyze config at ${source}: "entry" must be a non-empty string`,
       );
     }
     config.entry = value.entry.trim();
+  }
+  if (hasEntries) {
+    config.entries = parseEntriesValue(value.entries, source);
   }
 
   if (value.depth !== undefined) {
@@ -81,6 +109,18 @@ export function parseAnalyzeConfigObject(
       );
     }
     config.depth = value.depth;
+  }
+  if (value.maxFiles !== undefined) {
+    if (
+      typeof value.maxFiles !== "number" ||
+      !Number.isInteger(value.maxFiles) ||
+      value.maxFiles < 1
+    ) {
+      throw new Error(
+        `invalid analyze config at ${source}: "maxFiles" must be a positive integer`,
+      );
+    }
+    config.maxFiles = value.maxFiles;
   }
 
   if (value.include !== undefined) {
@@ -98,12 +138,115 @@ export function resolveAnalyzeInput(
   cli: AnalyzeCliOverrides,
   config: AnalyzeConfigDefaults,
 ): ResolvedAnalyzeInput {
+  const entries = normalizeAnalyzeEntries(cli.entry, config);
   return {
-    entry: cli.entry ?? config.entry,
+    entry: entries.length === 1 ? entries[0]?.path : undefined,
+    entries,
     depth: cli.depth ?? (config.depth === undefined ? undefined : String(config.depth)),
+    maxFiles:
+      cli.maxFiles ??
+      (config.maxFiles === undefined ? undefined : String(config.maxFiles)),
     include: cli.include ?? config.include,
     exclude: cli.exclude ?? config.exclude,
   };
+}
+
+function parseEntriesValue(value: unknown, source: string): AnalyzeConfigEntry[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`invalid analyze config at ${source}: "entries" must be an array`);
+  }
+  if (value.length === 0) {
+    throw new Error(`invalid analyze config at ${source}: "entries" cannot be empty`);
+  }
+
+  const entries = value.map((item, index) => {
+    if (typeof item === "string") {
+      const path = item.trim();
+      if (path.length === 0) {
+        throw new Error(
+          `invalid analyze config at ${source}: "entries[${index}]" must be a non-empty string`,
+        );
+      }
+      return {
+        path,
+        name: deriveEntryName(path),
+      };
+    }
+    if (!isRecord(item)) {
+      throw new Error(
+        `invalid analyze config at ${source}: "entries[${index}]" must be a string or object`,
+      );
+    }
+    const allowedKeys = new Set(["path", "name"]);
+    for (const key of Object.keys(item)) {
+      if (!allowedKeys.has(key)) {
+        throw new Error(
+          `invalid analyze config at ${source}: unknown key "entries[${index}].${key}"`,
+        );
+      }
+    }
+    if (typeof item.path !== "string" || item.path.trim().length === 0) {
+      throw new Error(
+        `invalid analyze config at ${source}: "entries[${index}].path" must be a non-empty string`,
+      );
+    }
+    if (
+      item.name !== undefined &&
+      (typeof item.name !== "string" || item.name.trim().length === 0)
+    ) {
+      throw new Error(
+        `invalid analyze config at ${source}: "entries[${index}].name" must be a non-empty string`,
+      );
+    }
+    const path = item.path.trim();
+    return {
+      path,
+      name: item.name?.trim() ?? deriveEntryName(path),
+    };
+  });
+
+  assertUniqueNames(entries, source);
+  return entries;
+}
+
+function normalizeAnalyzeEntries(
+  cliEntry: string | undefined,
+  config: AnalyzeConfigDefaults,
+): AnalyzeConfigEntry[] {
+  if (cliEntry !== undefined) {
+    const path = cliEntry.trim();
+    if (path.length === 0) {
+      return [];
+    }
+    return [{ path, name: deriveEntryName(path) }];
+  }
+  if (config.entries !== undefined) {
+    return config.entries;
+  }
+  if (config.entry !== undefined) {
+    return [{ path: config.entry, name: deriveEntryName(config.entry) }];
+  }
+  return [];
+}
+
+function assertUniqueNames(entries: AnalyzeConfigEntry[], source: string): void {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry.name)) {
+      throw new Error(
+        `invalid analyze config at ${source}: duplicate entry name "${entry.name}"`,
+      );
+    }
+    seen.add(entry.name);
+  }
+}
+
+function deriveEntryName(path: string): string {
+  const normalized = path
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  return normalized.length > 0 ? normalized : "entry";
 }
 
 function normalizePatternValue(

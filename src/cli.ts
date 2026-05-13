@@ -11,15 +11,12 @@ import { runReviews, retryIncomplete } from "./stages/review.ts";
 import { runCoverage } from "./stages/coverage.ts";
 import { runAggregate } from "./stages/aggregate.ts";
 import { runArchitecture } from "./stages/architecture.ts";
-import { AnalyzeWorkdir } from "./lib/analyze-workdir.ts";
-import { runAnalyzeScope } from "./stages/analyze/scope.ts";
-import { runAnalyzeSymbols } from "./stages/analyze/symbols.ts";
-import { runAnalyzeGraph } from "./stages/analyze/graph.ts";
-import { runAnalyzeDiagrams } from "./stages/analyze/diagrams.ts";
-import { runAnalyzeInsights } from "./stages/analyze/insights.ts";
-import { runAnalyzeReport } from "./stages/analyze/report.ts";
-import { parsePatternList } from "./stages/analyze/filters.ts";
 import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts";
+import {
+  DEFAULT_MAX_SCOPED_FILES,
+  runAnalyzeEntry,
+  runAnalyzeMulti,
+} from "./stages/analyze/run.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -37,8 +34,9 @@ OPTIONS:
   --edit               Edit the last prism comment instead of posting a new one
   --resume             Default behavior: skip stages with existing output
   --entry <path>       Analyze command: entry TS/TSX file
-  --config <path>      Analyze command: JSON config defaults for entry/depth/filters
+  --config <path>      Analyze command: JSON config defaults for entry/entries/depth/maxFiles/filters
   --depth <n>          Analyze command: traversal depth (default: 2)
+  --max-files <n>      Analyze command: max scoped files before failing (default: ${DEFAULT_MAX_SCOPED_FILES})
   --include <patterns> Analyze command: comma-separated include globs
   --exclude <patterns> Analyze command: comma-separated exclude globs
   --help               Show this message
@@ -64,6 +62,7 @@ async function main() {
       entry: { type: "string" },
       config: { type: "string" },
       depth: { type: "string" },
+      "max-files": { type: "string" },
       include: { type: "string" },
       exclude: { type: "string" },
       help: { type: "boolean", default: false },
@@ -96,14 +95,14 @@ async function main() {
       {
         entry: values.entry as string | undefined,
         depth: values.depth as string | undefined,
+        maxFiles: values["max-files"] as string | undefined,
         include: values.include as string | undefined,
         exclude: values.exclude as string | undefined,
       },
       analyzeConfig,
     );
 
-    const entry = analyzeInput.entry;
-    if (!entry) {
+    if (analyzeInput.entries.length === 0) {
       log.error("missing required --entry <path>", "analyze");
       process.exit(1);
     }
@@ -113,44 +112,74 @@ async function main() {
       log.error(`invalid analyze depth: ${analyzeInput.depth}`, "analyze");
       process.exit(1);
     }
+    const maxFilesValue =
+      analyzeInput.maxFiles === undefined
+        ? DEFAULT_MAX_SCOPED_FILES
+        : Number(analyzeInput.maxFiles);
+    if (!Number.isInteger(maxFilesValue) || maxFilesValue < 1) {
+      log.error(`invalid analyze maxFiles: ${analyzeInput.maxFiles}`, "analyze");
+      process.exit(1);
+    }
 
-    const wd = new AnalyzeWorkdir(entry, depthValue);
-    await wd.ensureAll();
-    const filters = {
-      include: parsePatternList(analyzeInput.include),
-      exclude: parsePatternList(analyzeInput.exclude),
-    };
+    if (analyzeInput.entries.length === 1) {
+      const entry = analyzeInput.entries[0]!;
+      log.step(`analyze ${entry.path} depth=${depthValue}`, "init");
+      const result = await runAnalyzeEntry(entry, {
+        depth: depthValue,
+        include: analyzeInput.include,
+        exclude: analyzeInput.exclude,
+        maxFiles: maxFilesValue,
+        force: {
+          forceAll: force,
+          forceStage,
+        },
+      });
+      log.done(
+        `${result.counts.files} files, ${result.counts.symbols} symbols, ${result.counts.repoIndexFiles} repo-index files, ${result.counts.edges} edges, ${result.counts.diagrams} diagrams, ${result.counts.insights} insights`,
+        "summary",
+      );
+      log.done(result.workdir.repoIndexFile(), "repo-index");
+      log.done(result.workdir.graphFile(), "graph");
+      log.done(result.workdir.diagrams(), "diagrams");
+      log.done(result.workdir.insightsFile(), "insights");
+      log.done(result.workdir.finalIndexReport(), "start-here");
+      log.done(result.workdir.finalReport(), "detail-report");
+      return;
+    }
 
-    log.step(`analyze ${entry} depth=${depthValue} → ${wd.root}`, "init");
-    const scope = await runAnalyzeScope(wd, {
-      force: isForced("scope"),
-      filters,
-    });
-    const symbols = await runAnalyzeSymbols(wd, scope, {
-      force: isForced("symbols"),
-    });
-    const graph = await runAnalyzeGraph(wd, scope, symbols, {
-      force: isForced("graph"),
-    });
-    const diagrams = await runAnalyzeDiagrams(wd, graph, {
-      force: isForced("diagrams"),
-    });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, {
-      force: isForced("insights"),
-    });
-    await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights, {
-      force: isForced("report"),
-    });
-
-    log.done(
-      `${scope.files.length} files, ${symbols.symbols.length} symbols, ${graph.edges.length} edges, ${diagrams.length} diagrams, ${insights.insights.length} insights`,
-      "summary",
+    log.step(
+      `analyze ${analyzeInput.entries.length} entries depth=${depthValue}`,
+      "init",
     );
-    log.done(wd.graphFile(), "graph");
-    log.done(wd.diagrams(), "diagrams");
-    log.done(wd.insightsFile(), "insights");
-    log.done(wd.finalIndexReport(), "start-here");
-    log.done(wd.finalReport(), "detail-report");
+    const manifest = await runAnalyzeMulti(analyzeInput, {
+      depth: depthValue,
+      maxFiles: maxFilesValue,
+      force: {
+        forceAll: force,
+        forceStage,
+      },
+    });
+    const failed = manifest.entries.filter((entry) => entry.status === "failed");
+    const succeeded = manifest.entries.length - failed.length;
+
+    log.done(`${succeeded}/${manifest.entries.length} entries succeeded`, "summary");
+    for (const entry of manifest.entries) {
+      log.done(`${entry.name}: ${entry.status}`, "entry");
+      if (entry.error) {
+        log.error(entry.error, `entry:${entry.name}`);
+      }
+    }
+    log.done(
+      `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/manifest.json`,
+      "manifest",
+    );
+    log.done(
+      `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/index.md`,
+      "start-here",
+    );
+    if (failed.length > 0) {
+      process.exit(1);
+    }
     return;
   }
 

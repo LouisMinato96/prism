@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "path": "src/app/page.tsx",
+      "name": "root"
+    },
+    "src/app/admin/page.tsx",
+    {
+      "path": "src/app/settings/page.tsx",
+      "name": "settings"
+    }
+  ],
+  "depth": 3,
+  "maxFiles": 1000,
+  "include": ["src/app/**", "src/components/**"],
+  "exclude": ["generated/**"]
+}

@@ -101,26 +101,42 @@ prism review 1234 --force-stage review   # re-run one stage
 
 ### Static Analysis
 
-`prism analyze` is the deterministic static-analysis command for a bounded React/Next.js slice. Use it when you want a repeatable read on one entrypoint: what it pulls in, how components/hooks/stores/services connect, where route and context boundaries sit, and where the slice has gaps.
+`prism analyze` is the deterministic static-analysis command for a bounded React/Next.js slice. Use it when you want a repeatable read on one entrypoint or a small set of entries: what they pull in, how components/hooks/stores/services connect, where route and context boundaries sit, and where the slice has gaps.
 
 ```bash
-prism analyze --config prism.analyze.json
+prism analyze --entry src/app/page.tsx --depth 3
+prism analyze --config .prism/analyze/root.json
+prism analyze --config .prism/analyze/multi.json --max-files 1500
 ```
 
-Use `--config` for the canonical scripted run. The config can set `entry`, `depth`, `include`, and `exclude`; explicit CLI flags still win.
+Keep scripted runs in repo-local config files under `.prism/analyze/*.json`. The config can set `entry` or `entries[]`, `depth`, `maxFiles`, `include`, and `exclude`; explicit CLI flags still win.
+See [`docs/examples/analyze-multi-entry.json`](docs/examples/analyze-multi-entry.json) for a reusable multi-entry example.
 
-Example `prism.analyze.json`:
+Example `.prism/analyze/multi.json`:
 
 ```json
 {
-  "entry": "src/app/page.tsx",
+  "entries": [
+    { "path": "src/app/page.tsx", "name": "root" },
+    "src/app/admin/page.tsx"
+  ],
   "depth": 3,
+  "maxFiles": 1000,
   "include": ["src/app/**", "src/components/**"],
   "exclude": ["generated/**"]
 }
 ```
 
-Start reading the generated output from `final/index.md`. It gives you the reading order, links the `Interpretation Guide`, and points to the layered pages before the raw artifacts. The full traceable report is `final/analysis.md`.
+`maxFiles` is the scope budget guard. Default: `1000`. Set it in config or override with `--max-files <n>`.
+
+What it does:
+
+- single-entry mode still works
+- multi-entry mode runs entries sequentially
+- each entry keeps its own V0 workdir and report shape
+- multi-entry mode does not merge graphs or deduplicate symbols across entries
+- over-budget single-entry runs fail before symbols
+- over-budget multi-entry runs record the failed entry and continue siblings
 
 The analyzer follows TS/JS imports and re-exports from the entry file up to `--depth` and extracts:
 
@@ -186,6 +202,16 @@ Output lands in `./.tmp/analyze/<entry-depth-run-id>/`:
     │   └── 10-interpretation-guide.md
     └── analysis.md
 ```
+
+Multi-entry runs keep those per-entry V0 workdirs unchanged and add a shared wrapper at `./.tmp/analyze/multi/<config-digest>/`:
+
+```text
+.tmp/analyze/multi/<config-digest>/
+├── manifest.json
+└── index.md
+```
+
+Start reading the generated output from `final/index.md` for single-entry runs. For multi-entry runs, start with `multi/<config-digest>/index.md`; it points at the per-entry reports and artifacts. The full traceable report remains `final/analysis.md` for each entry.
 
 ## Configuration
 

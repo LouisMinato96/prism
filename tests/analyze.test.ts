@@ -1,20 +1,29 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnalyzeWorkdir } from "../src/lib/analyze-workdir.ts";
+import { config as prismConfig } from "../src/config.ts";
 import {
   loadAnalyzeConfig,
   parseAnalyzeConfigObject,
   resolveAnalyzeInput,
 } from "../src/lib/analyze-config.ts";
+import {
+  createAnalyzeInputDigest,
+  runAnalyzeEntry,
+  runAnalyzeMulti,
+} from "../src/stages/analyze/run.ts";
 import { runAnalyzeDiagrams } from "../src/stages/analyze/diagrams.ts";
 import { matchesGlob, parsePatternList } from "../src/stages/analyze/filters.ts";
 import { runAnalyzeGraph } from "../src/stages/analyze/graph.ts";
 import { runAnalyzeInsights } from "../src/stages/analyze/insights.ts";
 import { runAnalyzeReport } from "../src/stages/analyze/report.ts";
+import { runAnalyzeRepoIndex } from "../src/stages/analyze/repo-index.ts";
 import { runAnalyzeScope } from "../src/stages/analyze/scope.ts";
 import { runAnalyzeSymbols } from "../src/stages/analyze/symbols.ts";
+import type { AnalyzeRepoIndex } from "../src/schemas/index.ts";
 
 test("analyze stages produce a bounded TSX graph from an entry file", async () => {
   const baseDir = await createFixtureProject();
@@ -24,12 +33,22 @@ test("analyze stages produce a bounded TSX graph from an entry file", async () =
 
     const scope = await runAnalyzeScope(wd, { force: true });
     const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
     const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
-    const report = await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights, {
-      force: true,
-    });
+    const report = await runAnalyzeReport(
+      wd,
+      scope,
+      symbols,
+      repoIndex,
+      graph,
+      diagrams,
+      insights,
+      {
+        force: true,
+      },
+    );
 
     expect(scope.files.map((file) => file.path).sort()).toEqual([
       "src/app/page.tsx",
@@ -50,6 +69,32 @@ test("analyze stages produce a bounded TSX graph from an entry file", async () =
     );
     expect(symbols.symbols).toContainEqual(
       expect.objectContaining({ name: "METRICS_ENDPOINT", type: "constant" }),
+    );
+    expect(repoIndex.fileCount).toBe(5);
+    expect(repoIndex.symbolCount).toBe(symbols.symbols.length);
+    expect(repoIndex.files.map((file) => file.path)).toEqual([
+      "src/app/page.tsx",
+      "src/components/Chart.tsx",
+      "src/components/Dashboard.tsx",
+      "src/hooks/useMetrics.ts",
+      "src/services/metrics.ts",
+    ]);
+    expect(repoIndex.entryFileSymbols).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Page", type: "component" })]),
+    );
+    expect(repoIndex.files).toContainEqual(
+      expect.objectContaining({
+        path: "src/components/Dashboard.tsx",
+        symbolCount: 1,
+        exportedSymbols: ["Dashboard"],
+      }),
+    );
+    expect(repoIndex.files).toContainEqual(
+      expect.objectContaining({
+        path: "src/services/metrics.ts",
+        symbolCount: 2,
+        exportedSymbols: ["METRICS_ENDPOINT", "fetchMetrics"],
+      }),
     );
 
     expect(graph.edges).toContainEqual(
@@ -106,6 +151,13 @@ test("analyze stages produce a bounded TSX graph from an entry file", async () =
     expect(report).toContain("# Static Analysis");
     expect(report).toContain("## Diagrams");
     expect(report).toContain("Component calls service directly");
+    expect(report).toContain("# Static Analysis Detail");
+    expect(await readFile(wd.finalPage("11-symbol-directory.md"), "utf8")).toContain(
+      "# Symbol Directory",
+    );
+    expect(await readFile(wd.finalIndexReport(), "utf8")).toContain(
+      "[Symbol Directory](pages/11-symbol-directory.md)",
+    );
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -181,6 +233,107 @@ test("analyze graph detects component route maps and fallback branches", async (
   }
 });
 
+test("analyze repo-index summarizes files, exported symbols, and entry symbols deterministically", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    await wd.ensureAll();
+
+    const scope = await runAnalyzeScope(wd, { force: true });
+    const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+
+    expect(repoIndex.typeCounts.component).toBe(3);
+    expect(repoIndex.typeCounts.hook).toBe(1);
+    expect(repoIndex.typeCounts.service).toBe(1);
+    expect(repoIndex.generatedFrom).toEqual({
+      scope: "../scope/scope.json",
+      symbols: "../symbols/symbols.json",
+    });
+    expect(repoIndex.entryFileExportedSymbols).toEqual(["Page"]);
+    expect(repoIndex.files.map((file) => file.path)).toEqual([
+      "src/app/page.tsx",
+      "src/components/Chart.tsx",
+      "src/components/Dashboard.tsx",
+      "src/hooks/useMetrics.ts",
+      "src/services/metrics.ts",
+    ]);
+    expect(repoIndex.files[2]).toMatchObject({
+      path: "src/components/Dashboard.tsx",
+      symbolCount: 1,
+      exportedSymbolCount: 1,
+      exportedSymbols: ["Dashboard"],
+    });
+    expect(repoIndex.files[4]).toMatchObject({
+      path: "src/services/metrics.ts",
+      symbolCount: 2,
+      exportedSymbols: ["METRICS_ENDPOINT", "fetchMetrics"],
+    });
+    await expect(readFile(wd.repoIndexFile(), "utf8")).resolves.toContain(
+      '"entryFileExportedSymbols": [\n    "Page"\n  ]',
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze repo-index skips cached output unless forced", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    await wd.ensureAll();
+
+    const scope = await runAnalyzeScope(wd, { force: true });
+    const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const first = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    await writeFile(
+      wd.repoIndexFile(),
+      JSON.stringify(
+        {
+          entry: "cached",
+          generatedFrom: { scope: "cached", symbols: "cached" },
+          fileCount: 0,
+          symbolCount: 0,
+          typeCounts: {
+            component: 0,
+            hook: 0,
+            context: 0,
+            function: 0,
+            constant: 0,
+            store: 0,
+            store_state: 0,
+            store_getter: 0,
+            store_action: 0,
+            class: 0,
+            method: 0,
+            type: 0,
+            service: 0,
+          },
+          files: [],
+          entryFileSymbols: [],
+          entryFileExportedSymbols: [],
+        },
+        null,
+        2,
+      ),
+    );
+    const cachedStat = await stat(wd.repoIndexFile());
+
+    const cached = await runAnalyzeRepoIndex(wd, scope, symbols);
+    expect(cached.entry).toBe("cached");
+    expect(cached.fileCount).toBe(0);
+    expect((await stat(wd.repoIndexFile())).mtimeMs).toBe(cachedStat.mtimeMs);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forced = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    expect(forced.entry).toBe("src/app/page.tsx");
+    expect(forced.fileCount).toBe(first.fileCount);
+    expect((await stat(wd.repoIndexFile())).mtimeMs).toBeGreaterThan(cachedStat.mtimeMs);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("analyze graph detects Zustand-style store access", async () => {
   const baseDir = await createStoreFixtureProject();
   try {
@@ -189,10 +342,11 @@ test("analyze graph detects Zustand-style store access", async () => {
 
     const scope = await runAnalyzeScope(wd, { force: true });
     const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
     const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
-    await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights, {
+    await runAnalyzeReport(wd, scope, symbols, repoIndex, graph, diagrams, insights, {
       force: true,
     });
 
@@ -469,25 +623,40 @@ test("analyze report stitches artifacts and skips cached output unless forced", 
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
     const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
-    const first = await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights, {
-      force: true,
-    });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    const first = await runAnalyzeReport(
+      wd,
+      scope,
+      symbols,
+      repoIndex,
+      graph,
+      diagrams,
+      insights,
+      {
+        force: true,
+      },
+    );
 
     expect(first).toContain("Files analyzed: 5");
     expect(first).toContain("Graph Summary");
     expect(first).toContain("Extraction Gaps");
+    expect(first).toContain("Repo index");
 
     await writeFile(wd.finalReport(), "cached report");
-    const cached = await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights);
+    const cached = await runAnalyzeReport(wd, scope, symbols, repoIndex, graph, diagrams, insights);
     expect(cached).toBe("cached report");
     await expect(readFile(wd.finalPage("10-interpretation-guide.md"), "utf8")).resolves.toContain(
       "# Interpretation Guide",
+    );
+    await expect(readFile(wd.finalPage("12-module-directory.md"), "utf8")).resolves.toContain(
+      "# Module Directory",
     );
 
     const forced = await runAnalyzeReport(
       wd,
       scope,
       symbols,
+      repoIndex,
       graph,
       diagrams.map((diagram) =>
         diagram.name === "hook-flow" ? { ...diagram, edgeCount: 99 } : diagram,
@@ -510,6 +679,11 @@ test("analyze report stitches artifacts and skips cached output unless forced", 
     const indexPage = await readFile(wd.finalIndexReport(), "utf8");
     expect(indexPage).toContain("[Interpretation Guide](pages/10-interpretation-guide.md)");
     expect(indexPage).toContain("[Interpretation guide](pages/10-interpretation-guide.md)");
+    expect(indexPage).toContain("[Symbol Directory](pages/11-symbol-directory.md)");
+    expect(indexPage).toContain("[Module Directory](pages/12-module-directory.md)");
+    await expect(
+      readFile(wd.finalPage("09-debug-artifacts.md"), "utf8"),
+    ).resolves.toContain("Repo index");
     await expect(
       readFile(wd.finalPage("01-entry-provider-stack.md"), "utf8"),
     ).resolves.toContain("# Entry Provider Stack");
@@ -586,6 +760,432 @@ test("analyze report stitches artifacts and skips cached output unless forced", 
     expect(interpretationGuidePage).toContain("## How To Read Extraction Gaps");
     expect(interpretationGuidePage).toContain("## What Not To Conclude");
     expect(interpretationGuidePage).toContain("## Suggested Reading Paths");
+    expect(interpretationGuidePage).toContain(
+      "[Symbol Directory](11-symbol-directory.md) -> [Module Directory](12-module-directory.md)",
+    );
+    expect(interpretationGuidePage).toContain(
+      "[Static Analysis Index](../index.md) -> [Symbol Directory](11-symbol-directory.md) -> [Module Directory](12-module-directory.md)",
+    );
+    const moduleDirectoryPage = await readFile(wd.finalPage("12-module-directory.md"), "utf8");
+    expect(moduleDirectoryPage).toContain("# Module Directory");
+    expect(moduleDirectoryPage).toContain("## Entry Folder Summary");
+    expect(moduleDirectoryPage).toContain("## Top Parent Folders by File Count");
+    expect(moduleDirectoryPage).toContain("## Top Parent Folders by Symbol Count");
+    expect(moduleDirectoryPage).toContain("## Domain Folder Type Mix");
+    expect(moduleDirectoryPage).toContain("## Export Density by Folder");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("symbol directory truncates dense, exported, and type previews deterministically", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    await wd.ensureAll();
+
+    const scope = await runAnalyzeScope(wd, { force: true });
+    const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
+    const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
+    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+
+    const paddedRepoIndex: AnalyzeRepoIndex = {
+      ...repoIndex,
+      fileCount: repoIndex.fileCount + 30,
+      symbolCount: repoIndex.symbolCount + 30,
+      typeCounts: {
+        ...repoIndex.typeCounts,
+        function: (repoIndex.typeCounts.function ?? 0) + 30,
+      },
+      files: [
+        ...repoIndex.files,
+        ...Array.from({ length: 30 }, (_, index) => {
+          const path = `src/extra/extra-${String(index + 1).padStart(2, "0")}.ts`;
+          const symbolName = `extraSymbol${index + 1}`;
+          return {
+            path,
+            symbolCount: 1,
+            exportedSymbolCount: 1,
+            typeCounts: {
+              component: 0,
+              hook: 0,
+              context: 0,
+              function: 1,
+              constant: 0,
+              store: 0,
+              store_state: 0,
+              store_getter: 0,
+              store_action: 0,
+              class: 0,
+              method: 0,
+              type: 0,
+              service: 0,
+            },
+            symbols: [
+              {
+                id: `extra:${index + 1}`,
+                type: "function" as const,
+                name: symbolName,
+                line: 1,
+                exported: true,
+              },
+            ],
+            exportedSymbols: [symbolName],
+          };
+        }),
+      ],
+    };
+
+    await runAnalyzeReport(
+      wd,
+      scope,
+      symbols,
+      paddedRepoIndex,
+      graph,
+      diagrams,
+      insights,
+      {
+        force: true,
+      },
+    );
+
+    const symbolDirectoryPage = await readFile(wd.finalPage("11-symbol-directory.md"), "utf8");
+    const exportedSymbolCount = paddedRepoIndex.files.flatMap((file) =>
+      file.symbols.filter((symbol) => symbol.exported),
+    ).length;
+    expect(symbolDirectoryPage).toContain("## Top Dense Files");
+    expect(symbolDirectoryPage).toContain("Showing first 20 of 35 files.");
+    expect(symbolDirectoryPage).toContain("## Exported Symbols");
+    expect(symbolDirectoryPage).toContain(
+      `Showing first 20 of ${exportedSymbolCount} exported symbols.`,
+    );
+    expect(symbolDirectoryPage).toContain("## Preview By Type");
+    expect(symbolDirectoryPage).toContain(
+      `Showing first 25 of ${paddedRepoIndex.typeCounts.function} function symbols.`,
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("module directory summarizes folders and deterministic notes", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    await wd.ensureAll();
+
+    const scope = await runAnalyzeScope(wd, { force: true });
+    const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
+    const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
+    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+
+    const extraFiles = [
+      ...Array.from({ length: 10 }, (_, index) => ({
+        path: `src/app/extra-${String(index + 1).padStart(2, "0")}.ts`,
+        type: index < 4 ? ("component" as const) : ("function" as const),
+        exported: true,
+        symbolName: `appExtra${index + 1}`,
+      })),
+      ...Array.from({ length: 6 }, (_, index) => ({
+        path: `src/components/organisms/chartTabsV2/tab-${String(index + 1).padStart(2, "0")}.tsx`,
+        type: "component" as const,
+        exported: true,
+        symbolName: `ChartTabs${index + 1}`,
+      })),
+      ...Array.from({ length: 5 }, (_, index) => ({
+        path: `src/config/config-${String(index + 1).padStart(2, "0")}.ts`,
+        type: index % 2 === 0 ? ("constant" as const) : ("type" as const),
+        exported: true,
+        symbolName: `CONFIG_${index + 1}`,
+      })),
+      ...Array.from({ length: 5 }, (_, index) => ({
+        path: `src/helpers/helper-${String(index + 1).padStart(2, "0")}.ts`,
+        type: "function" as const,
+        exported: true,
+        symbolName: `helper${index + 1}`,
+      })),
+      ...Array.from({ length: 16 }, (_, index) => ({
+        path: `src/extra/domain-${String(index + 1).padStart(2, "0")}/file.ts`,
+        type: "function" as const,
+        exported: true,
+        symbolName: `extraDomain${index + 1}`,
+      })),
+    ];
+
+    const extraTypeCounts = {
+      component: 0,
+      hook: 0,
+      context: 0,
+      function: 0,
+      constant: 0,
+      store: 0,
+      store_state: 0,
+      store_getter: 0,
+      store_action: 0,
+      class: 0,
+      method: 0,
+      type: 0,
+      service: 0,
+    } satisfies Record<keyof AnalyzeRepoIndex["typeCounts"], number>;
+    for (const file of extraFiles) {
+      extraTypeCounts[file.type] += 1;
+    }
+
+    const paddedRepoIndex: AnalyzeRepoIndex = {
+      ...repoIndex,
+      fileCount: repoIndex.fileCount + extraFiles.length,
+      symbolCount: repoIndex.symbolCount + extraFiles.length,
+      typeCounts: {
+        ...repoIndex.typeCounts,
+        component: (repoIndex.typeCounts.component ?? 0) + extraTypeCounts.component,
+        hook: (repoIndex.typeCounts.hook ?? 0) + extraTypeCounts.hook,
+        context: (repoIndex.typeCounts.context ?? 0) + extraTypeCounts.context,
+        function: (repoIndex.typeCounts.function ?? 0) + extraTypeCounts.function,
+        constant: (repoIndex.typeCounts.constant ?? 0) + extraTypeCounts.constant,
+        store: (repoIndex.typeCounts.store ?? 0) + extraTypeCounts.store,
+        store_state: (repoIndex.typeCounts.store_state ?? 0) + extraTypeCounts.store_state,
+        store_getter: (repoIndex.typeCounts.store_getter ?? 0) + extraTypeCounts.store_getter,
+        store_action: (repoIndex.typeCounts.store_action ?? 0) + extraTypeCounts.store_action,
+        class: (repoIndex.typeCounts.class ?? 0) + extraTypeCounts.class,
+        method: (repoIndex.typeCounts.method ?? 0) + extraTypeCounts.method,
+        type: (repoIndex.typeCounts.type ?? 0) + extraTypeCounts.type,
+        service: (repoIndex.typeCounts.service ?? 0) + extraTypeCounts.service,
+      },
+      files: [
+        ...repoIndex.files,
+        ...extraFiles.map((file, index) => ({
+          path: file.path,
+          symbolCount: 1,
+          exportedSymbolCount: 1,
+          typeCounts: {
+            component: file.type === "component" ? 1 : 0,
+            hook: 0,
+            context: 0,
+            function: file.type === "function" ? 1 : 0,
+            constant: file.type === "constant" ? 1 : 0,
+            store: 0,
+            store_state: 0,
+            store_getter: 0,
+            store_action: 0,
+            class: 0,
+            method: 0,
+            type: file.type === "type" ? 1 : 0,
+            service: 0,
+          },
+          symbols: [
+            {
+              id: `extra-${index + 1}`,
+              type: file.type,
+              name: file.symbolName,
+              line: 1,
+              exported: file.exported,
+            },
+          ],
+          exportedSymbols: [file.symbolName],
+        })),
+      ],
+    };
+
+    await runAnalyzeReport(
+      wd,
+      scope,
+      symbols,
+      paddedRepoIndex,
+      graph,
+      diagrams,
+      insights,
+      { force: true },
+    );
+
+    const moduleDirectoryPage = await readFile(wd.finalPage("12-module-directory.md"), "utf8");
+    expect(moduleDirectoryPage).toContain("## Entry Folder Summary");
+    expect(moduleDirectoryPage).toContain("## Top Parent Folders by File Count");
+    expect(moduleDirectoryPage).toContain("## Top Parent Folders by Symbol Count");
+    expect(moduleDirectoryPage).toContain("## Domain Folder Type Mix");
+    expect(moduleDirectoryPage).toContain("## Export Density by Folder");
+    expect(moduleDirectoryPage).toContain("Showing first 20 of");
+    expect(moduleDirectoryPage).toContain("Entry folder `src/app` has");
+    expect(moduleDirectoryPage).toContain("high symbol concentration");
+    expect(moduleDirectoryPage).toContain(
+      `high symbol concentration: 11 of ${paddedRepoIndex.symbolCount} symbols in this analyzed slice`,
+    );
+    expect(moduleDirectoryPage).toContain("component-heavy");
+    expect(moduleDirectoryPage).toContain("export-heavy for constants and types");
+    expect(moduleDirectoryPage).toContain("helper/function heavy");
+    expect(moduleDirectoryPage).toContain("src/components/organisms/chartTabsV2");
+    expect(moduleDirectoryPage).toContain("src/config");
+    expect(moduleDirectoryPage).toContain("src/helpers");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("module directory groups repeated widget constants notes and caps note output", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    await wd.ensureAll();
+
+    const scope = await runAnalyzeScope(wd, { force: true });
+    const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
+    const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
+    const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
+    const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
+    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+
+    const zeroTypeCounts = {
+      component: 0,
+      hook: 0,
+      context: 0,
+      function: 0,
+      constant: 0,
+      store: 0,
+      store_state: 0,
+      store_getter: 0,
+      store_action: 0,
+      class: 0,
+      method: 0,
+      type: 0,
+      service: 0,
+    } satisfies Record<keyof AnalyzeRepoIndex["typeCounts"], number>;
+
+    const componentHeavyFiles = Array.from({ length: 13 }, (_, index) => {
+      const folder = `src/sections/section-${String(index + 1).padStart(2, "0")}`;
+      const symbolPrefix = `Section${index + 1}`;
+      return {
+        path: `${folder}/index.tsx`,
+        symbolCount: 3,
+        exportedSymbolCount: 3,
+        typeCounts: {
+          ...zeroTypeCounts,
+          component: 3,
+        },
+        symbols: Array.from({ length: 3 }, (__unused, symbolIndex) => ({
+          id: `section:${index + 1}:${symbolIndex + 1}`,
+          type: "component" as const,
+          name: `${symbolPrefix}${symbolIndex + 1}`,
+          line: symbolIndex + 1,
+          exported: true,
+        })),
+        exportedSymbols: Array.from({ length: 3 }, (__unused, symbolIndex) =>
+          `${symbolPrefix}${symbolIndex + 1}`,
+        ),
+      };
+    });
+
+    const widgetConstantsFiles = Array.from({ length: 15 }, (_, index) => {
+      const widgetName = `widget-${String(index + 1).padStart(2, "0")}`;
+      const folder = `src/widgetRegistry/widgets/${widgetName}/constants`;
+      return {
+        path: `${folder}/index.ts`,
+        symbolCount: 4,
+        exportedSymbolCount: 4,
+        typeCounts: {
+          ...zeroTypeCounts,
+          constant: 2,
+          type: 2,
+        },
+        symbols: [
+          {
+            id: `widget:${index + 1}:constant:1`,
+            type: "constant" as const,
+            name: `${widgetName.toUpperCase()}_A`,
+            line: 1,
+            exported: true,
+          },
+          {
+            id: `widget:${index + 1}:constant:2`,
+            type: "constant" as const,
+            name: `${widgetName.toUpperCase()}_B`,
+            line: 2,
+            exported: true,
+          },
+          {
+            id: `widget:${index + 1}:type:1`,
+            type: "type" as const,
+            name: `${widgetName}TypeA`,
+            line: 3,
+            exported: true,
+          },
+          {
+            id: `widget:${index + 1}:type:2`,
+            type: "type" as const,
+            name: `${widgetName}TypeB`,
+            line: 4,
+            exported: true,
+          },
+        ],
+        exportedSymbols: [
+          `${widgetName.toUpperCase()}_A`,
+          `${widgetName.toUpperCase()}_B`,
+          `${widgetName}TypeA`,
+          `${widgetName}TypeB`,
+        ],
+      };
+    });
+
+    const extraFiles = [...componentHeavyFiles, ...widgetConstantsFiles];
+    const extraTypeCounts = extraFiles.reduce(
+      (counts, file) => {
+        for (const [type, count] of Object.entries(file.typeCounts)) {
+          counts[type as keyof typeof counts] += count;
+        }
+        return counts;
+      },
+      { ...zeroTypeCounts },
+    );
+
+    const paddedRepoIndex: AnalyzeRepoIndex = {
+      ...repoIndex,
+      fileCount: repoIndex.fileCount + extraFiles.length,
+      symbolCount:
+        repoIndex.symbolCount +
+        extraFiles.reduce((sum, file) => sum + file.symbolCount, 0),
+      typeCounts: {
+        ...repoIndex.typeCounts,
+        component: (repoIndex.typeCounts.component ?? 0) + extraTypeCounts.component,
+        hook: (repoIndex.typeCounts.hook ?? 0) + extraTypeCounts.hook,
+        context: (repoIndex.typeCounts.context ?? 0) + extraTypeCounts.context,
+        function: (repoIndex.typeCounts.function ?? 0) + extraTypeCounts.function,
+        constant: (repoIndex.typeCounts.constant ?? 0) + extraTypeCounts.constant,
+        store: (repoIndex.typeCounts.store ?? 0) + extraTypeCounts.store,
+        store_state: (repoIndex.typeCounts.store_state ?? 0) + extraTypeCounts.store_state,
+        store_getter: (repoIndex.typeCounts.store_getter ?? 0) + extraTypeCounts.store_getter,
+        store_action: (repoIndex.typeCounts.store_action ?? 0) + extraTypeCounts.store_action,
+        class: (repoIndex.typeCounts.class ?? 0) + extraTypeCounts.class,
+        method: (repoIndex.typeCounts.method ?? 0) + extraTypeCounts.method,
+        type: (repoIndex.typeCounts.type ?? 0) + extraTypeCounts.type,
+        service: (repoIndex.typeCounts.service ?? 0) + extraTypeCounts.service,
+      },
+      files: [...repoIndex.files, ...extraFiles],
+    };
+
+    await runAnalyzeReport(
+      wd,
+      scope,
+      symbols,
+      paddedRepoIndex,
+      graph,
+      diagrams,
+      insights,
+      { force: true },
+    );
+
+    const moduleDirectoryPage = await readFile(wd.finalPage("12-module-directory.md"), "utf8");
+    expect(moduleDirectoryPage).toContain(
+      "Widget constants/types folders under `src/widgetRegistry/widgets/*/{constants,types}`",
+    );
+    expect(moduleDirectoryPage).toContain("15 folders");
+    expect(moduleDirectoryPage).toContain("60 exported constants/types");
+    expect(moduleDirectoryPage).toContain("`widget-01`, `widget-02`, `widget-03`");
+    expect(moduleDirectoryPage).toContain("- ... 2 more deterministic notes");
+    expect(moduleDirectoryPage.split("\n").filter((line) => line.startsWith("- "))).toHaveLength(
+      13,
+    );
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -882,14 +1482,43 @@ test("analyze config object supports include/exclude as arrays or strings", () =
     parseAnalyzeConfigObject({
       entry: "src/app/page.tsx",
       depth: 3,
+      maxFiles: 1500,
       include: ["src/app/**", "src/components/**"],
       exclude: "generated/**,dist/**",
     }),
   ).toEqual({
     entry: "src/app/page.tsx",
     depth: 3,
+    maxFiles: 1500,
     include: "src/app/**,src/components/**",
     exclude: "generated/**,dist/**",
+  });
+});
+
+test("analyze config object supports entries as strings and object entries", () => {
+  expect(
+    parseAnalyzeConfigObject({
+      entries: ["src/app/page.tsx", "src/routes/Entry.tsx"],
+    }),
+  ).toEqual({
+    entries: [
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      { path: "src/routes/Entry.tsx", name: "src-routes-entry-tsx" },
+    ],
+  });
+
+  expect(
+    parseAnalyzeConfigObject({
+      entries: [
+        { path: "src/app/page.tsx" },
+        { path: "src/routes/Entry.tsx", name: "routes-entry" },
+      ],
+    }),
+  ).toEqual({
+    entries: [
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      { path: "src/routes/Entry.tsx", name: "routes-entry" },
+    ],
   });
 });
 
@@ -897,13 +1526,16 @@ test("analyze config resolver applies config defaults and preserves CLI override
   const config = parseAnalyzeConfigObject({
     entry: "src/app/page.tsx",
     depth: 3,
+    maxFiles: 2222,
     include: ["src/app/**", "src/components/**"],
     exclude: ["generated/**"],
   });
 
   expect(resolveAnalyzeInput({}, config)).toEqual({
     entry: "src/app/page.tsx",
+    entries: [{ path: "src/app/page.tsx", name: "src-app-page-tsx" }],
     depth: "3",
+    maxFiles: "2222",
     include: "src/app/**,src/components/**",
     exclude: "generated/**",
   });
@@ -913,6 +1545,7 @@ test("analyze config resolver applies config defaults and preserves CLI override
       {
         entry: "src/override.tsx",
         depth: "1",
+        maxFiles: "19",
         include: "src/override/**",
         exclude: "src/override/generated/**",
       },
@@ -920,10 +1553,315 @@ test("analyze config resolver applies config defaults and preserves CLI override
     ),
   ).toEqual({
     entry: "src/override.tsx",
+    entries: [{ path: "src/override.tsx", name: "src-override-tsx" }],
     depth: "1",
+    maxFiles: "19",
     include: "src/override/**",
     exclude: "src/override/generated/**",
   });
+});
+
+test("analyze config resolver uses config entries when entry override is absent", () => {
+  const config = parseAnalyzeConfigObject({
+    entries: ["src/app/page.tsx", { path: "src/routes/Entry.tsx", name: "route-entry" }],
+    depth: 2,
+  });
+
+  expect(resolveAnalyzeInput({}, config)).toEqual({
+    entry: undefined,
+    entries: [
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      { path: "src/routes/Entry.tsx", name: "route-entry" },
+    ],
+    depth: "2",
+    maxFiles: undefined,
+    include: undefined,
+    exclude: undefined,
+  });
+});
+
+test("analyze multi orchestration writes deterministic manifest and preserves per-entry workdirs", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    await mkdir(join(baseDir, "src/routes"), { recursive: true });
+    await writeFile(
+      join(baseDir, "src/routes/Entry.tsx"),
+      `
+import DashboardPage from "../app/page";
+
+export function Entry() {
+  return <DashboardPage />;
+}
+`,
+    );
+
+    const analyzeInput = resolveAnalyzeInput(
+      {},
+      parseAnalyzeConfigObject({
+        entries: [
+          { path: "src/app/page.tsx", name: "app-page" },
+          { path: "src/routes/Entry.tsx", name: "route-entry" },
+        ],
+        depth: 2,
+        include: ["src/**"],
+      }),
+    );
+
+    const manifest = await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 2,
+      force: { forceAll: true },
+    });
+
+    const manifestPath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      manifest.configDigest,
+      "manifest.json",
+    );
+    const fromDisk = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(fromDisk).toEqual(manifest);
+    const indexPath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      manifest.configDigest,
+      "index.md",
+    );
+    const index = await readFile(indexPath, "utf8");
+    expect(manifest.configDigest).toBe(createAnalyzeInputDigest(analyzeInput, 2));
+    expect(manifest.entries.map((entry) => entry.name)).toEqual(["app-page", "route-entry"]);
+    expect(manifest.entries.every((entry) => entry.status === "success")).toBe(true);
+    expect(index).toContain("- entries: 2");
+    expect(index).toContain("- succeeded: 2");
+    expect(index).toContain("- failed: 0");
+    expect(index).toContain("- depth: 2");
+    expect(index).toContain("- max files: 1000");
+    expect(index).toContain("- include: `src/**`");
+    expect(index).toContain("| app-page | success |");
+    expect(index).toContain("| route-entry | success |");
+    expect(index).toContain("# Static Analysis Multi-Entry Index");
+    expect(index).toMatch(/\[report\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/index\.md\)/);
+    expect(index).toMatch(/\[detail\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/analysis\.md\)/);
+    expect(index).toMatch(
+      /\[repo-index\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/repo-index\/repo-index\.json\)/,
+    );
+    expect(index).toMatch(
+      /\[graph\]\(\.\.\/\.\.\/src__routes__Entry\.tsx-d2-[a-f0-9]{8}\/graph\/graph\.json\)/,
+    );
+    for (const entry of manifest.entries) {
+      expect(entry.workdir).toContain(`${prismConfig.workdirRoot}/analyze/`);
+      expect(entry.workdir).toContain("-d2-");
+      expect(entry.artifacts.scope).toContain(`${prismConfig.workdirRoot}/analyze/`);
+      expect(entry.artifacts.repoIndex).toContain(`${prismConfig.workdirRoot}/analyze/`);
+      expect(entry.counts).toBeDefined();
+    }
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze multi orchestration records failures and continues entries", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const analyzeInput = resolveAnalyzeInput(
+      {},
+      parseAnalyzeConfigObject({
+        entries: [
+          { path: "src/missing/Nope.tsx", name: "missing-entry" },
+          { path: "src/app/page.tsx", name: "app-page" },
+        ],
+      }),
+    );
+
+    const manifest = await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 1,
+      force: { forceAll: true },
+    });
+    const indexPath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      manifest.configDigest,
+      "index.md",
+    );
+    const index = await readFile(indexPath, "utf8");
+
+    expect(manifest.entries.map((entry) => entry.status)).toEqual(["failed", "success"]);
+    expect(manifest.entries[0]?.error).toContain("analyze entry not found");
+    expect(manifest.entries[1]?.counts?.files).toBeGreaterThan(0);
+    expect(index).toContain("| missing-entry | failed | - | - | - | - | - |");
+    expect(index).toContain("| app-page | success |");
+    expect(index).toContain("## Failures");
+    expect(index).toContain("- missing-entry: analyze entry not found");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze multi index is not rewritten when unchanged unless forced", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const analyzeInput = resolveAnalyzeInput(
+      {},
+      parseAnalyzeConfigObject({
+        entries: [{ path: "src/app/page.tsx", name: "app-page" }],
+        depth: 2,
+      }),
+    );
+
+    const first = await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 2,
+      force: { forceAll: true },
+    });
+    const indexPath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      first.configDigest,
+      "index.md",
+    );
+    const firstStat = await stat(indexPath);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 2,
+      force: { forceAll: false },
+    });
+    const secondStat = await stat(indexPath);
+    expect(secondStat.mtimeMs).toBe(firstStat.mtimeMs);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 2,
+      force: { forceAll: true },
+    });
+    const thirdStat = await stat(indexPath);
+    expect(thirdStat.mtimeMs).toBeGreaterThan(secondStat.mtimeMs);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze single-entry runner remains backward compatible", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const result = await runAnalyzeEntry(
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      {
+        baseDir,
+        depth: 3,
+        force: { forceAll: true },
+      },
+    );
+
+    expect(result.counts.files).toBe(5);
+    expect(result.counts.symbols).toBeGreaterThan(0);
+    await expect(readFile(result.workdir.finalReport(), "utf8")).resolves.toContain(
+      "# Static Analysis",
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze single-entry runner fails before symbols when scope budget exceeded", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    await expect(
+      runAnalyzeEntry(
+        { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+        {
+          baseDir,
+          depth: 3,
+          maxFiles: 4,
+          force: { forceAll: true },
+        },
+      ),
+    ).rejects.toThrow(
+      'scope budget exceeded for "src/app/page.tsx"; scoped files: 5; max allowed: 4',
+    );
+
+    const wd = new AnalyzeWorkdir("src/app/page.tsx", 3, baseDir);
+    expect(existsSync(wd.scopeFile())).toBe(true);
+    expect(existsSync(wd.symbolsFile())).toBe(false);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze multi records budget failure and continues sibling entries", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    await mkdir(join(baseDir, "src/routes"), { recursive: true });
+    await writeFile(
+      join(baseDir, "src/routes/Entry.tsx"),
+      `
+export function Entry() {
+  return <section>ok</section>;
+}
+`,
+    );
+
+    const analyzeInput = resolveAnalyzeInput(
+      {},
+      parseAnalyzeConfigObject({
+        entries: [
+          { path: "src/app/page.tsx", name: "app-page" },
+          { path: "src/routes/Entry.tsx", name: "route-entry" },
+        ],
+      }),
+    );
+    const manifest = await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 1,
+      maxFiles: 1,
+      force: { forceAll: true },
+    });
+
+    expect(manifest.entries.map((entry) => entry.status)).toEqual(["failed", "success"]);
+    expect(manifest.entries[0]?.error).toContain('scope budget exceeded for "src/app/page.tsx"');
+    expect(manifest.entries[1]?.counts?.files).toBe(1);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze runner uses default scope budget and honors raised maxFiles", async () => {
+  const baseDir = await createFixtureProject();
+  try {
+    const defaultBudgetResult = await runAnalyzeEntry(
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      {
+        baseDir,
+        depth: 3,
+        force: { forceAll: true },
+      },
+    );
+    expect(defaultBudgetResult.counts.files).toBe(5);
+
+    const raisedBudgetResult = await runAnalyzeEntry(
+      { path: "src/app/page.tsx", name: "src-app-page-tsx" },
+      {
+        baseDir,
+        depth: 3,
+        maxFiles: 5,
+        force: { forceAll: true },
+      },
+    );
+    expect(raisedBudgetResult.counts.files).toBe(5);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
 });
 
 test("analyze config loader fails clearly on missing or invalid config", async () => {
@@ -962,6 +1900,59 @@ test("analyze config object rejects unknown keys", () => {
       includes: ["src/app/**"],
     }),
   ).toThrow('unknown key "includes"');
+});
+
+test("analyze config object rejects invalid entries", () => {
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entry: "src/app/page.tsx",
+      entries: ["src/routes/Entry.tsx"],
+    }),
+  ).toThrow('"entry" and "entries" cannot both be set');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entries: [],
+    }),
+  ).toThrow('"entries" cannot be empty');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entries: "src/app/page.tsx",
+    }),
+  ).toThrow('"entries" must be an array');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entries: [{}],
+    }),
+  ).toThrow('"entries[0].path" must be a non-empty string');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entries: [{ path: "src/app/page.tsx", label: "app" }],
+    }),
+  ).toThrow('unknown key "entries[0].label"');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entries: [{ path: "src/a.ts" }, { path: "src/b.ts", name: "src-a-ts" }],
+    }),
+  ).toThrow('duplicate entry name "src-a-ts"');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entry: "src/app/page.tsx",
+      maxFiles: 0,
+    }),
+  ).toThrow('"maxFiles" must be a positive integer');
+
+  expect(() =>
+    parseAnalyzeConfigObject({
+      entry: "src/app/page.tsx",
+      maxFiles: 1.5,
+    }),
+  ).toThrow('"maxFiles" must be a positive integer');
 });
 
 async function createRouteMapFixtureProject(): Promise<string> {

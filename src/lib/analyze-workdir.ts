@@ -23,6 +23,7 @@ export class AnalyzeWorkdir {
   raw = () => join(this.root, "raw");
   scope = () => join(this.root, "scope");
   symbols = () => join(this.root, "symbols");
+  repoIndex = () => join(this.root, "repo-index");
   graph = () => join(this.root, "graph");
   insights = () => join(this.root, "insights");
   diagrams = () => join(this.root, "diagrams");
@@ -33,6 +34,7 @@ export class AnalyzeWorkdir {
   scopeFile = () => join(this.scope(), "scope.json");
   astManifestFile = () => join(this.symbols(), "ast-manifest.json");
   symbolsFile = () => join(this.symbols(), "symbols.json");
+  repoIndexFile = () => join(this.repoIndex(), "repo-index.json");
   referencesFile = () => join(this.graph(), "references.json");
   graphFile = () => join(this.graph(), "graph.json");
   insightsFile = () => join(this.insights(), "insights.json");
@@ -47,6 +49,7 @@ export class AnalyzeWorkdir {
       this.raw(),
       this.scope(),
       this.symbols(),
+      this.repoIndex(),
       this.graph(),
       this.insights(),
       this.diagrams(),

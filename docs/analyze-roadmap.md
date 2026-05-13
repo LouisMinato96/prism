@@ -41,30 +41,7 @@ V0 now includes:
 
 ## V1 Plan
 
-V1 is the next real expansion. Estimate: medium.
-
-```mermaid
-flowchart LR
-  V0["single slice"] --> V1["repeatable analysis workflow"]
-  V1 --> Profiles["analysis profiles"]
-  V1 --> Nav["better navigation"]
-  V1 --> Compare["compare runs"]
-  V1 --> Repo["repo graph"]
-  V1 --> Rules["rule and lens config"]
-```
-
-V1 should include:
-
-- multi-entry runs
-- repo-wide graphing
-- analysis profiles
-- rule and lens configuration
-- Markdown or HTML navigation that is better than the current layered pages
-- compare runs and architecture drift
-- cleaner diagrams
-- richer action and data-flow extraction
-- broader language support
-- CI-oriented workflows
+V1 implementation now lives in [`docs/analyze-v1.md`](./analyze-v1.md). The shipped slice keeps multi-entry orchestration conservative: sequential existing V0 runs plus a separate aggregate index, with no merged repo graph yet.
 
 ## Later
 

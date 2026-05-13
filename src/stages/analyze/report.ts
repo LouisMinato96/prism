@@ -1,12 +1,16 @@
 import { mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { relative } from "node:path";
+import { dirname, relative } from "node:path";
 import type { AnalyzeWorkdir } from "../../lib/analyze-workdir.ts";
 import type {
   AnalyzeEdge,
   AnalyzeGraph,
   AnalyzeInsight,
   AnalyzeInsights,
+  AnalyzeRepoIndex,
+  AnalyzeRepoIndexFile,
+  AnalyzeRepoIndexSymbol,
+  AnalyzeRepoIndexSymbolType,
   AnalyzeNode,
   AnalyzeNodeType,
   AnalyzeScope,
@@ -14,9 +18,11 @@ import type {
 } from "../../schemas/index.ts";
 import { log } from "../../lib/log.ts";
 import type { AnalyzeDiagram } from "./diagrams.ts";
+import { ANALYZE_REPO_INDEX_TYPES } from "./repo-index.ts";
 
 const PREVIEW_EDGE_LIMIT = 12;
 const LARGE_DIAGRAM_EDGE_THRESHOLD = 50;
+const MODULE_DIRECTORY_NOTE_LIMIT = 12;
 
 interface LayerPageSpec {
   file: string;
@@ -97,6 +103,7 @@ export async function runAnalyzeReport(
   wd: AnalyzeWorkdir,
   scope: AnalyzeScope,
   symbols: AnalyzeSymbols,
+  repoIndex: AnalyzeRepoIndex,
   graph: AnalyzeGraph,
   diagrams: AnalyzeDiagram[],
   insights: AnalyzeInsights,
@@ -117,6 +124,7 @@ export async function runAnalyzeReport(
     wd,
     scope,
     symbols,
+    repoIndex,
     graph,
     diagrams,
     insights.insights,
@@ -129,6 +137,14 @@ export async function runAnalyzeReport(
   await writeFile(
     wd.finalPage("00-entry-overview.md"),
     renderEntryOverviewPage(wd, scope, symbols, graph),
+  );
+  await writeFile(
+    wd.finalPage("11-symbol-directory.md"),
+    renderSymbolDirectoryPage(repoIndex),
+  );
+  await writeFile(
+    wd.finalPage("12-module-directory.md"),
+    renderModuleDirectoryPage(repoIndex),
   );
   for (const spec of LAYER_PAGES) {
     await writeFile(wd.finalPage(spec.file), renderLayerPage(wd, spec, graph, diagrams));
@@ -155,6 +171,8 @@ function expectedReportFiles(wd: AnalyzeWorkdir): string[] {
     wd.finalReport(),
     wd.finalIndexReport(),
     wd.finalPage("00-entry-overview.md"),
+    wd.finalPage("11-symbol-directory.md"),
+    wd.finalPage("12-module-directory.md"),
     ...LAYER_PAGES.map((page) => wd.finalPage(page.file)),
     wd.finalPage("07-extraction-gaps.md"),
     wd.finalPage("09-debug-artifacts.md"),
@@ -170,7 +188,9 @@ function renderIndexReport(
   diagrams: AnalyzeDiagram[],
   insights: AnalyzeInsight[],
 ): string {
-  const debugStep = LAYER_PAGES.length + 2;
+  const debugStep = LAYER_PAGES.length + 4;
+  const interpretationStep = debugStep + 1;
+  const modulePage = wd.finalPage("12-module-directory.md");
   const servicePage = LAYER_PAGES.find((page) => page.diagramName === "service-flow");
   const preGapPages = LAYER_PAGES.filter((page) => page.diagramName !== "service-flow");
   const lines: string[] = [
@@ -181,20 +201,22 @@ function renderIndexReport(
     "",
     "## Start Here",
     "",
-    "This report is organized for reading first and debugging second. Start with the layered pages, then open raw artifacts only when you need proof or detail.",
+    "This report is organized for reading first and debugging second. Start with the overview, symbol directory, and module directory, then move through the layered pages and raw artifacts only when you need proof or detail.",
     `New to Prism static analysis? Read the [Interpretation Guide](${relative(wd.final(), wd.finalPage("10-interpretation-guide.md"))}) first.`,
     "",
     "```mermaid",
     "flowchart TD",
     '  Start["Start here"] --> Entry["0. Entry overview"]',
-    '  Entry --> Provider["1. Entry provider stack"]',
-    '  Provider --> Route["2. Route map"]',
-    '  Route --> Context["3. Context boundaries"]',
-    '  Context --> Hooks["4. Hook flow"]',
-    '  Hooks --> State["5. State store map"]',
-    '  State --> Surface["6. Store surface"]',
-    '  Surface --> Gaps["7. Extraction gaps"]',
-    '  Gaps --> Services["8. Service flow"]',
+    '  Entry --> Directory["1. Symbol directory"]',
+    '  Directory --> Module["2. Module directory"]',
+    '  Module --> Provider["3. Entry provider stack"]',
+    '  Provider --> Route["4. Route map"]',
+    '  Route --> Context["5. Context boundaries"]',
+    '  Context --> Hooks["6. Hook flow"]',
+    '  Hooks --> State["7. State store map"]',
+    '  State --> Surface["8. Store surface"]',
+    '  Surface --> Gaps["9. Extraction gaps"]',
+    '  Gaps --> Services["10. Service flow"]',
     `  Services --> Debug["${debugStep}. Debug artifacts"]`,
     "```",
     "",
@@ -209,16 +231,18 @@ function renderIndexReport(
     "## Reading Order",
     "",
     `0. [Entry Overview](${relative(wd.final(), wd.finalPage("00-entry-overview.md"))})`,
+    `1. [Symbol Directory](${relative(wd.final(), wd.finalPage("11-symbol-directory.md"))})`,
+    `2. [Module Directory](${relative(wd.final(), modulePage)})`,
     ...preGapPages.map(
       (page, index) =>
-        `${index + 1}. [${page.title}](${relative(wd.final(), wd.finalPage(page.file))})`,
+        `${index + 3}. [${page.title}](${relative(wd.final(), wd.finalPage(page.file))})`,
     ),
-    `7. [Extraction Gaps](${relative(wd.final(), wd.finalPage("07-extraction-gaps.md"))})`,
+    `${3 + preGapPages.length}. [Extraction Gaps](${relative(wd.final(), wd.finalPage("07-extraction-gaps.md"))})`,
     servicePage
-      ? `8. [${servicePage.title}](${relative(wd.final(), wd.finalPage(servicePage.file))})`
-      : `8. [Service Flow](${relative(wd.final(), wd.finalPage("08-service-flow.md"))})`,
+      ? `${4 + preGapPages.length}. [${servicePage.title}](${relative(wd.final(), wd.finalPage(servicePage.file))})`
+      : `${4 + preGapPages.length}. [Service Flow](${relative(wd.final(), wd.finalPage("08-service-flow.md"))})`,
     `${debugStep}. [Debug Artifacts](${relative(wd.final(), wd.finalPage("09-debug-artifacts.md"))})`,
-    `${debugStep + 1}. [Interpretation Guide](${relative(wd.final(), wd.finalPage("10-interpretation-guide.md"))})`,
+    `${interpretationStep}. [Interpretation Guide](${relative(wd.final(), wd.finalPage("10-interpretation-guide.md"))})`,
     "",
     "## Diagram Size Guide",
     "",
@@ -236,6 +260,8 @@ function renderIndexReport(
     "## Full Detail",
     "",
     `- [Full deterministic report](${relative(wd.final(), wd.finalReport())})`,
+    `- [Symbol Directory](${relative(wd.final(), wd.finalPage("11-symbol-directory.md"))})`,
+    `- [Module Directory](${relative(wd.final(), modulePage)})`,
     `- [Raw artifact guide](${relative(wd.final(), wd.finalPage("09-debug-artifacts.md"))})`,
     `- [Interpretation guide](${relative(wd.final(), wd.finalPage("10-interpretation-guide.md"))})`,
     "",
@@ -294,11 +320,727 @@ function renderEntryOverviewPage(
     "",
     "## Next",
     "",
-    `Continue to [Entry Provider Stack](${relative(wd.finalPages(), wd.finalPage("01-entry-provider-stack.md"))}).`,
+    `Continue to [Symbol Directory](${relative(wd.finalPages(), wd.finalPage("11-symbol-directory.md"))}).`,
     "",
   ];
 
   return lines.join("\n");
+}
+
+function renderSymbolDirectoryPage(repoIndex: AnalyzeRepoIndex): string {
+  const denseFilesAll = repoIndex.files
+    .filter((file) => file.symbolCount > 0)
+    .sort(compareRepoIndexFilesBySymbolCount);
+  const exportedSymbolsAll = repoIndexSymbolRows(repoIndex)
+    .filter((row) => row.symbol.exported)
+    .sort(compareRepoIndexSymbolRows);
+  const denseFiles = denseFilesAll.slice(0, 20);
+  const exportedSymbols = exportedSymbolsAll.slice(0, 20);
+
+  const lines: string[] = [
+    "# Symbol Directory",
+    "",
+    "Purpose: deterministic inventory of the bounded slice, organized for quick scanning of files, exports, and symbol types.",
+    "",
+    "## Entry File Symbols",
+    "",
+    `Entry: \`${repoIndex.entry}\``,
+    "",
+    ...renderEntryFileSymbolsTable(repoIndex.entryFileSymbols),
+    "",
+    "## Counts By Type",
+    "",
+    ...renderRepoIndexTypeCountsTable(repoIndex.typeCounts),
+    "",
+    "## Top Dense Files",
+    "",
+    ...renderRepoIndexFileTable(denseFiles),
+    ...(denseFilesAll.length > 20
+      ? ["", `Showing first 20 of ${denseFilesAll.length} files.`]
+      : []),
+    "",
+    "## Exported Symbols",
+    "",
+    ...renderRepoIndexExportedSymbolsTable(exportedSymbols),
+    ...(exportedSymbolsAll.length > 20
+      ? ["", `Showing first 20 of ${exportedSymbolsAll.length} exported symbols.`]
+      : []),
+    "",
+    "## Preview By Type",
+    "",
+    ...renderRepoIndexPreviewByType(repoIndex),
+    "",
+    "## Next",
+    "",
+    "[Continue to Module Directory](12-module-directory.md).",
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+function renderModuleDirectoryPage(repoIndex: AnalyzeRepoIndex): string {
+  const folderSummaries = buildFolderSummaries(repoIndex);
+  const parentFoldersByFiles = folderSummaries.parentFolders
+    .slice()
+    .sort(compareFolderSummariesByFiles)
+    .slice(0, 20);
+  const parentFoldersBySymbols = folderSummaries.parentFolders
+    .slice()
+    .sort(compareFolderSummariesBySymbols)
+    .slice(0, 20);
+  const domainFoldersBySymbols = folderSummaries.domainFolders
+    .slice()
+    .sort(compareFolderSummariesBySymbols)
+    .slice(0, 20);
+  const exportDensityByFolder = folderSummaries.parentFolders
+    .slice()
+    .sort(compareFolderSummariesByExportDensity)
+    .slice(0, 20);
+  const notes = buildFolderNotes(repoIndex, folderSummaries);
+
+  const lines: string[] = [
+    "# Module Directory",
+    "",
+    "Purpose: deterministic folder-level inventory derived only from the repo index, organized for parent folders, compact domain folders, and export density.",
+    "",
+    "## Entry Folder Summary",
+    "",
+    ...renderEntryFolderSummaryTable(
+      folderSummaries.entryParentFolder,
+      folderSummaries.entryDomainFolder,
+    ),
+    "",
+    "## Top Parent Folders by File Count",
+    "",
+    ...renderFolderMetricsTable(parentFoldersByFiles),
+    ...(folderSummaries.parentFolders.length > 20
+      ? [
+          "",
+          `Showing first 20 of ${folderSummaries.parentFolders.length} parent folders.`,
+        ]
+      : []),
+    "",
+    "## Top Parent Folders by Symbol Count",
+    "",
+    ...renderFolderMetricsTable(parentFoldersBySymbols),
+    ...(folderSummaries.parentFolders.length > 20
+      ? [
+          "",
+          `Showing first 20 of ${folderSummaries.parentFolders.length} parent folders.`,
+        ]
+      : []),
+    "",
+    "## Domain Folder Type Mix",
+    "",
+    ...renderFolderMetricsTable(domainFoldersBySymbols),
+    ...(folderSummaries.domainFolders.length > 20
+      ? [
+          "",
+          `Showing first 20 of ${folderSummaries.domainFolders.length} domain folders.`,
+        ]
+      : []),
+    "",
+    "## Export Density by Folder",
+    "",
+    ...renderExportDensityTable(exportDensityByFolder),
+    ...(folderSummaries.parentFolders.length > 20
+      ? [
+          "",
+          `Showing first 20 of ${folderSummaries.parentFolders.length} parent folders.`,
+        ]
+      : []),
+    "",
+    "## Deterministic Notes",
+    "",
+    ...renderFolderNotes(notes),
+    "",
+    "## Next",
+    "",
+    "[Continue to Entry Provider Stack](01-entry-provider-stack.md).",
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+interface FolderSummary {
+  folder: string;
+  files: number;
+  symbols: number;
+  exportedSymbols: number;
+  typeCounts: Record<AnalyzeRepoIndexSymbolType, number>;
+  exportedTypeCounts: Record<AnalyzeRepoIndexSymbolType, number>;
+}
+
+interface FolderSummarySet {
+  entryParentFolder: FolderSummary;
+  entryDomainFolder: FolderSummary;
+  parentFolders: FolderSummary[];
+  domainFolders: FolderSummary[];
+}
+
+function buildFolderSummaries(repoIndex: AnalyzeRepoIndex): FolderSummarySet {
+  const parentFolders = new Map<string, FolderSummary>();
+  const domainFolders = new Map<string, FolderSummary>();
+  let entryParentFolder = emptyFolderSummary(parentFolder(repoIndex.entry));
+  let entryDomainFolder = emptyFolderSummary(domainFolder(repoIndex.entry));
+
+  for (const file of repoIndex.files) {
+    const parentFolderName = parentFolder(file.path);
+    const domainFolderName = domainFolder(file.path);
+    const parentSummary = upsertFolderSummary(parentFolders, parentFolderName);
+    const domainSummary = upsertFolderSummary(domainFolders, domainFolderName);
+
+    incrementFolderSummary(parentSummary, file);
+    incrementFolderSummary(domainSummary, file);
+
+    if (file.path === repoIndex.entry) {
+      entryParentFolder = parentSummary;
+      entryDomainFolder = domainSummary;
+    }
+  }
+
+  return {
+    entryParentFolder,
+    entryDomainFolder,
+    parentFolders: [...parentFolders.values()].sort((a, b) =>
+      a.folder.localeCompare(b.folder),
+    ),
+    domainFolders: [...domainFolders.values()].sort((a, b) =>
+      a.folder.localeCompare(b.folder),
+    ),
+  };
+}
+
+function upsertFolderSummary(
+  summaries: Map<string, FolderSummary>,
+  folder: string,
+): FolderSummary {
+  const existing = summaries.get(folder);
+  if (existing) return existing;
+
+  const summary = emptyFolderSummary(folder);
+  summaries.set(folder, summary);
+  return summary;
+}
+
+function emptyFolderSummary(folder: string): FolderSummary {
+  return {
+    folder,
+    files: 0,
+    symbols: 0,
+    exportedSymbols: 0,
+    typeCounts: Object.fromEntries(
+      ANALYZE_REPO_INDEX_TYPES.map((type) => [type, 0]),
+    ) as Record<AnalyzeRepoIndexSymbolType, number>,
+    exportedTypeCounts: Object.fromEntries(
+      ANALYZE_REPO_INDEX_TYPES.map((type) => [type, 0]),
+    ) as Record<AnalyzeRepoIndexSymbolType, number>,
+  };
+}
+
+function incrementFolderSummary(
+  summary: FolderSummary,
+  file: AnalyzeRepoIndexFile,
+): void {
+  summary.files += 1;
+  summary.symbols += file.symbolCount;
+  summary.exportedSymbols += file.exportedSymbolCount;
+  for (const type of ANALYZE_REPO_INDEX_TYPES) {
+    summary.typeCounts[type] += file.typeCounts[type] ?? 0;
+  }
+  for (const symbol of file.symbols) {
+    if (symbol.exported) summary.exportedTypeCounts[symbol.type] += 1;
+  }
+}
+
+function renderEntryFolderSummaryTable(
+  parentFolderSummary: FolderSummary,
+  domainFolderSummary: FolderSummary,
+): string[] {
+  return [
+    "| Kind | Folder | Files | Symbols | Exported Symbols | Type mix |",
+    "| --- | --- | ---: | ---: | ---: | --- |",
+    renderFolderSummaryRow("Parent", parentFolderSummary),
+    renderFolderSummaryRow("Domain", domainFolderSummary),
+  ];
+}
+
+function renderFolderMetricsTable(rows: FolderSummary[]): string[] {
+  if (rows.length === 0) return ["No folders found in repo index."];
+
+  return [
+    "| Folder | Files | Symbols | Exported Symbols | Type mix |",
+    "| --- | ---: | ---: | ---: | --- |",
+    ...rows.map((row) => renderFolderSummaryRowContents(row)),
+  ];
+}
+
+function renderExportDensityTable(rows: FolderSummary[]): string[] {
+  if (rows.length === 0) return ["No folders found in repo index."];
+
+  return [
+    "| Folder | Files | Symbols | Exported Symbols | Density | Type mix |",
+    "| --- | ---: | ---: | ---: | ---: | --- |",
+    ...rows.map(
+      (row) =>
+        `| \`${escapeTableCell(row.folder)}\` | ${row.files} | ${row.symbols} | ${row.exportedSymbols} | ${formatExportDensity(row)} | ${formatTypeMix(row.typeCounts)} |`,
+    ),
+  ];
+}
+
+function renderFolderSummaryRow(kind: string, folderSummary: FolderSummary): string {
+  return `| ${kind} | \`${escapeTableCell(folderSummary.folder)}\` | ${folderSummary.files} | ${folderSummary.symbols} | ${folderSummary.exportedSymbols} | ${formatTypeMix(folderSummary.typeCounts)} |`;
+}
+
+function renderFolderSummaryRowContents(folderSummary: FolderSummary): string {
+  return `| \`${escapeTableCell(folderSummary.folder)}\` | ${folderSummary.files} | ${folderSummary.symbols} | ${folderSummary.exportedSymbols} | ${formatTypeMix(folderSummary.typeCounts)} |`;
+}
+
+function formatExportDensity(folderSummary: FolderSummary): string {
+  if (folderSummary.symbols === 0) return "0% (0/0)";
+  const density =
+    Math.round((folderSummary.exportedSymbols / folderSummary.symbols) * 1000) / 10;
+  return `${density}% (${folderSummary.exportedSymbols}/${folderSummary.symbols})`;
+}
+
+function formatTypeMix(typeCounts: Record<AnalyzeRepoIndexSymbolType, number>): string {
+  const parts = ANALYZE_REPO_INDEX_TYPES.flatMap((type) => {
+    const count = typeCounts[type] ?? 0;
+    return count > 0 ? [`${type}=${count}`] : [];
+  });
+  return parts.length === 0 ? "-" : parts.join(", ");
+}
+
+function compareFolderSummariesByFiles(a: FolderSummary, b: FolderSummary): number {
+  return b.files - a.files || b.symbols - a.symbols || a.folder.localeCompare(b.folder);
+}
+
+function compareFolderSummariesBySymbols(a: FolderSummary, b: FolderSummary): number {
+  return b.symbols - a.symbols || b.files - a.files || a.folder.localeCompare(b.folder);
+}
+
+function compareFolderSummariesByExportDensity(
+  a: FolderSummary,
+  b: FolderSummary,
+): number {
+  const densityA = a.symbols === 0 ? 0 : a.exportedSymbols / a.symbols;
+  const densityB = b.symbols === 0 ? 0 : b.exportedSymbols / b.symbols;
+  return (
+    densityB - densityA ||
+    b.exportedSymbols - a.exportedSymbols ||
+    a.folder.localeCompare(b.folder)
+  );
+}
+
+function renderFolderNotes(notes: string[]): string[] {
+  if (notes.length === 0)
+    return ["No folder-level notes met the deterministic thresholds."];
+
+  const lines = notes.slice(0, MODULE_DIRECTORY_NOTE_LIMIT).map((note) => `- ${note}`);
+  if (notes.length > MODULE_DIRECTORY_NOTE_LIMIT) {
+    lines.push(
+      `- ... ${notes.length - MODULE_DIRECTORY_NOTE_LIMIT} more deterministic notes`,
+    );
+  }
+  return lines;
+}
+
+function buildFolderNotes(
+  repoIndex: AnalyzeRepoIndex,
+  folderSummaries: FolderSummarySet,
+): string[] {
+  const notes: FolderNoteCandidate[] = [];
+  const concentrationThreshold = Math.max(8, Math.ceil(repoIndex.symbolCount * 0.2));
+
+  const entryFolder = folderSummaries.entryParentFolder;
+  if (entryFolder.files > 1 || entryFolder.symbols >= 4) {
+    notes.push({
+      sortKey: [0, -entryFolder.symbols, entryFolder.folder],
+      groupKey: `entry:${entryFolder.folder}`,
+      displayKey: entryFolder.folder,
+      kind: "entry",
+      folder: entryFolder.folder,
+      fileCount: entryFolder.files,
+      relevantSymbols: entryFolder.symbols,
+      totalSymbols: entryFolder.symbols,
+      example: entryFolder.folder,
+    });
+  }
+
+  for (const folder of folderSummaries.parentFolders) {
+    if (folder.symbols >= concentrationThreshold) {
+      notes.push({
+        sortKey: [1, -folder.symbols, folder.folder],
+        groupKey: `concentration:${folder.folder}`,
+        displayKey: folder.folder,
+        kind: "concentration",
+        folder: folder.folder,
+        fileCount: folder.files,
+        relevantSymbols: folder.symbols,
+        totalSymbols: repoIndex.symbolCount,
+        example: folder.folder,
+      });
+    }
+
+    const exportedConstantTypeTotal =
+      (folder.exportedTypeCounts.constant ?? 0) + (folder.exportedTypeCounts.type ?? 0);
+    if (exportedConstantTypeTotal >= 4) {
+      const widgetGroup = widgetConstantsGroupKey(folder.folder);
+      notes.push({
+        sortKey: [2, -exportedConstantTypeTotal, folder.folder],
+        groupKey: `export-heavy:${widgetGroup?.groupKey ?? folder.folder}`,
+        displayKey: widgetGroup?.groupKey ?? folder.folder,
+        kind: "export-heavy",
+        folder: folder.folder,
+        fileCount: folder.files,
+        relevantSymbols: exportedConstantTypeTotal,
+        totalSymbols: folder.symbols,
+        example: widgetGroup?.example ?? folder.folder,
+        groupable: Boolean(widgetGroup),
+      });
+    }
+
+    if ((folder.typeCounts.component ?? 0) >= 3) {
+      notes.push({
+        sortKey: [3, -(folder.typeCounts.component ?? 0), folder.folder],
+        groupKey: `component-heavy:${folder.folder}`,
+        displayKey: folder.folder,
+        kind: "component-heavy",
+        folder: folder.folder,
+        fileCount: folder.files,
+        relevantSymbols: folder.typeCounts.component ?? 0,
+        totalSymbols: folder.symbols,
+        example: folder.folder,
+      });
+    }
+
+    const helperHeavy =
+      (folder.typeCounts.function ?? 0) + (folder.typeCounts.method ?? 0);
+    if (helperHeavy >= 5 && helperHeavy >= Math.ceil(folder.symbols * 0.6)) {
+      notes.push({
+        sortKey: [4, -helperHeavy, folder.folder],
+        groupKey: `helper-heavy:${folder.folder}`,
+        displayKey: folder.folder,
+        kind: "helper-heavy",
+        folder: folder.folder,
+        fileCount: folder.files,
+        relevantSymbols: helperHeavy,
+        totalSymbols: folder.symbols,
+        example: folder.folder,
+      });
+    }
+  }
+
+  return buildGroupedFolderNoteTexts(notes);
+}
+
+interface FolderNoteCandidate {
+  sortKey: [number, number, string];
+  groupKey: string;
+  displayKey: string;
+  kind: "entry" | "concentration" | "export-heavy" | "component-heavy" | "helper-heavy";
+  folder: string;
+  fileCount: number;
+  relevantSymbols: number;
+  totalSymbols: number;
+  example: string;
+  groupable?: boolean;
+}
+
+interface FolderNoteGroup {
+  sortKey: [number, number, string];
+  kind: FolderNoteCandidate["kind"];
+  groupKey: string;
+  displayKey: string;
+  folders: string[];
+  fileCount: number;
+  relevantSymbols: number;
+  totalSymbols: number;
+  examples: string[];
+  groupable: boolean;
+}
+
+function buildGroupedFolderNoteTexts(notes: FolderNoteCandidate[]): string[] {
+  const groups = new Map<string, FolderNoteGroup>();
+  for (const note of notes) {
+    const group = groups.get(note.groupKey);
+    if (!group) {
+      groups.set(note.groupKey, {
+        sortKey: note.sortKey,
+        kind: note.kind,
+        groupKey: note.groupKey,
+        displayKey: note.displayKey,
+        folders: [note.folder],
+        fileCount: note.fileCount,
+        relevantSymbols: note.relevantSymbols,
+        totalSymbols: note.totalSymbols,
+        examples: [note.example],
+        groupable: note.groupable ?? false,
+      });
+      continue;
+    }
+
+    group.folders.push(note.folder);
+    group.fileCount += note.fileCount;
+    group.relevantSymbols += note.relevantSymbols;
+    group.totalSymbols += note.totalSymbols;
+    group.examples.push(note.example);
+    group.sortKey = [group.sortKey[0], -group.relevantSymbols, group.displayKey];
+    group.groupable = group.groupable || Boolean(note.groupable);
+  }
+
+  return [...groups.values()]
+    .sort(
+      (a, b) =>
+        a.sortKey[0] - b.sortKey[0] ||
+        a.sortKey[1] - b.sortKey[1] ||
+        a.sortKey[2].localeCompare(b.sortKey[2]),
+    )
+    .map((group) => renderFolderNoteGroup(group))
+    .filter((note, index, all) => all.indexOf(note) === index);
+}
+
+function renderFolderNoteGroup(group: FolderNoteGroup): string {
+  if (group.kind === "entry") {
+    return `Entry folder \`${escapeTableCell(group.displayKey)}\` has ${group.fileCount} files and ${group.relevantSymbols} symbols.`;
+  }
+
+  if (group.kind === "concentration") {
+    if (group.folders.length > 1) {
+      return `Folder group \`${escapeTableCell(group.displayKey)}\` has high symbol concentration across ${group.folders.length} folders and ${group.relevantSymbols} symbols.`;
+    }
+    return `Parent folder \`${escapeTableCell(group.displayKey)}\` has high symbol concentration: ${group.relevantSymbols} of ${group.totalSymbols} symbols in this analyzed slice.`;
+  }
+
+  if (group.kind === "export-heavy" && group.folders.length > 1 && group.groupable) {
+    const examples = uniquePreserveOrder(group.examples).slice(0, 3);
+    return `Widget constants/types folders under \`${escapeTableCell(group.displayKey)}\`: ${group.folders.length} folders, ${group.relevantSymbols} exported constants/types across ${examples
+      .map((example) => `\`${escapeTableCell(example)}\``)
+      .join(", ")}.`;
+  }
+
+  if (group.kind === "export-heavy") {
+    return `Parent folder \`${escapeTableCell(group.displayKey)}\` is export-heavy for constants and types: ${group.relevantSymbols} exported symbols.`;
+  }
+
+  if (group.kind === "component-heavy" && group.folders.length > 1) {
+    return `Folder group \`${escapeTableCell(group.displayKey)}\` is component-heavy across ${group.folders.length} folders: ${group.relevantSymbols} components.`;
+  }
+
+  if (group.kind === "component-heavy") {
+    return `Parent folder \`${escapeTableCell(group.displayKey)}\` is component-heavy: ${group.relevantSymbols} components.`;
+  }
+
+  if (group.kind === "helper-heavy" && group.folders.length > 1) {
+    return `Folder group \`${escapeTableCell(group.displayKey)}\` is helper/function heavy across ${group.folders.length} folders: ${group.relevantSymbols} functions and methods.`;
+  }
+
+  if (group.kind === "helper-heavy") {
+    return `Parent folder \`${escapeTableCell(group.displayKey)}\` is helper/function heavy: ${group.relevantSymbols} functions and methods.`;
+  }
+
+  return `Folder \`${escapeTableCell(group.displayKey)}\` has ${group.relevantSymbols} symbols.`;
+}
+
+function uniquePreserveOrder(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function widgetConstantsGroupKey(
+  folder: string,
+): { groupKey: string; example: string } | null {
+  const parts = folder.split("/").filter(Boolean);
+  const widgetsIndex = parts.findIndex(
+    (part, index) => part === "widgets" && parts[index - 1] === "widgetRegistry",
+  );
+  if (widgetsIndex < 0 || parts.length <= widgetsIndex + 2) return null;
+
+  const widgetName = parts[widgetsIndex + 1];
+  const leaf = parts[widgetsIndex + 2];
+  if (leaf !== "constants" && leaf !== "types") return null;
+
+  return {
+    groupKey: `${parts.slice(0, widgetsIndex).join("/")}/widgets/*/{constants,types}`,
+    example: widgetName,
+  };
+}
+
+function parentFolder(path: string): string {
+  const folder = dirname(path);
+  return folder === "." ? "(root)" : folder;
+}
+
+function domainFolder(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length <= 1) return "(root)";
+
+  const directoryParts = parts.slice(0, -1);
+  if (directoryParts.length <= 3) return directoryParts.join("/");
+
+  if (
+    directoryParts[1] === "components" &&
+    DOMAIN_FOLDER_EXPANDERS.has(directoryParts[2])
+  ) {
+    return directoryParts.slice(0, Math.min(4, directoryParts.length)).join("/");
+  }
+
+  return directoryParts.slice(0, 3).join("/");
+}
+
+const DOMAIN_FOLDER_EXPANDERS = new Set([
+  "atoms",
+  "blocks",
+  "components",
+  "containers",
+  "features",
+  "forms",
+  "layouts",
+  "modules",
+  "molecules",
+  "organisms",
+  "pages",
+  "panels",
+  "sections",
+  "templates",
+  "widgets",
+]);
+
+function renderEntryFileSymbolsTable(symbols: AnalyzeRepoIndexSymbol[]): string[] {
+  if (symbols.length === 0) return ["No entry file symbols recorded."];
+
+  const rows = symbols.slice().sort(compareRepoIndexSymbols);
+  return [
+    "| Symbol | Type | Line | Exported |",
+    "| --- | --- | ---: | --- |",
+    ...rows.map(
+      (symbol) =>
+        `| \`${escapeTableCell(symbol.name)}\` | \`${symbol.type}\` | ${symbol.line} | ${symbol.exported ? "yes" : "no"} |`,
+    ),
+  ];
+}
+
+function renderRepoIndexTypeCountsTable(
+  typeCounts: Partial<Record<AnalyzeRepoIndexSymbolType, number>>,
+): string[] {
+  return [
+    "| Type | Count |",
+    "| --- | ---: |",
+    ...ANALYZE_REPO_INDEX_TYPES.map(
+      (type) => `| \`${type}\` | ${typeCounts[type] ?? 0} |`,
+    ),
+  ];
+}
+
+function renderRepoIndexFileTable(files: AnalyzeRepoIndexFile[]): string[] {
+  if (files.length === 0) return ["No files found in repo index."];
+
+  return [
+    "| File | Symbols | Exported |",
+    "| --- | ---: | ---: |",
+    ...files.map(
+      (file) =>
+        `| \`${escapeTableCell(file.path)}\` | ${file.symbolCount} | ${file.exportedSymbolCount} |`,
+    ),
+  ];
+}
+
+function renderRepoIndexExportedSymbolsTable(rows: RepoIndexSymbolRow[]): string[] {
+  if (rows.length === 0) return ["No exported symbols found in repo index."];
+
+  return [
+    "| File | Symbol | Type | Line |",
+    "| --- | --- | --- | ---: |",
+    ...rows.map(
+      (row) =>
+        `| \`${escapeTableCell(row.file)}\` | \`${escapeTableCell(row.symbol.name)}\` | \`${row.symbol.type}\` | ${row.symbol.line} |`,
+    ),
+  ];
+}
+
+function renderRepoIndexPreviewByType(repoIndex: AnalyzeRepoIndex): string[] {
+  const symbolRows = repoIndexSymbolRows(repoIndex);
+  const lines: string[] = [];
+
+  for (const type of ANALYZE_REPO_INDEX_TYPES) {
+    const rows = symbolRows
+      .filter((row) => row.symbol.type === type)
+      .sort(compareRepoIndexSymbolRows);
+    if (rows.length === 0) continue;
+
+    lines.push(`### ${prettyRepoIndexType(type)}`, "");
+    lines.push("| File | Symbol | Line | Exported |");
+    lines.push("| --- | --- | ---: | --- |");
+    for (const row of rows.slice(0, 25)) {
+      lines.push(
+        `| \`${escapeTableCell(row.file)}\` | \`${escapeTableCell(row.symbol.name)}\` | ${row.symbol.line} | ${row.symbol.exported ? "yes" : "no"} |`,
+      );
+    }
+    if (rows.length > 25) {
+      lines.push("", `Showing first 25 of ${rows.length} ${type} symbols.`);
+    }
+    lines.push("");
+  }
+
+  if (lines.length === 0) return ["No symbols found in repo index."];
+  return lines;
+}
+
+interface RepoIndexSymbolRow {
+  file: string;
+  symbol: AnalyzeRepoIndexSymbol;
+}
+
+function repoIndexSymbolRows(repoIndex: AnalyzeRepoIndex): RepoIndexSymbolRow[] {
+  return repoIndex.files.flatMap((file) =>
+    file.symbols.map((symbol) => ({ file: file.path, symbol })),
+  );
+}
+
+function compareRepoIndexFilesBySymbolCount(
+  a: AnalyzeRepoIndexFile,
+  b: AnalyzeRepoIndexFile,
+): number {
+  return b.symbolCount - a.symbolCount || a.path.localeCompare(b.path);
+}
+
+function compareRepoIndexSymbols(
+  a: AnalyzeRepoIndexSymbol,
+  b: AnalyzeRepoIndexSymbol,
+): number {
+  return a.line - b.line || a.type.localeCompare(b.type) || a.name.localeCompare(b.name);
+}
+
+function compareRepoIndexSymbolRows(
+  a: RepoIndexSymbolRow,
+  b: RepoIndexSymbolRow,
+): number {
+  return (
+    a.file.localeCompare(b.file) ||
+    a.symbol.line - b.symbol.line ||
+    a.symbol.type.localeCompare(b.symbol.type) ||
+    a.symbol.name.localeCompare(b.symbol.name) ||
+    a.symbol.id.localeCompare(b.symbol.id)
+  );
+}
+
+function prettyRepoIndexType(type: AnalyzeRepoIndexSymbolType): string {
+  return type
+    .split("_")
+    .map((part) => titleCase(part))
+    .join(" ");
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|");
 }
 
 function renderLayerPage(
@@ -1111,6 +1853,7 @@ function renderDebugArtifactsPage(
     "",
     "## JSON Artifacts",
     "",
+    `- Repo index: \`${relative(wd.finalPages(), wd.repoIndexFile())}\``,
     `- Graph: \`${relative(wd.finalPages(), wd.graphFile())}\``,
     `- Symbols: \`${relative(wd.finalPages(), wd.symbolsFile())}\``,
     `- Scope: \`${relative(wd.finalPages(), wd.scopeFile())}\``,
@@ -1203,9 +1946,9 @@ function renderInterpretationGuidePage(wd: AnalyzeWorkdir): string {
     "",
     "## Suggested Reading Paths",
     "",
-    `- Orientation: [Entry Overview](${relative(wd.finalPages(), wd.finalPage("00-entry-overview.md"))}) -> [Route Map](${relative(wd.finalPages(), wd.finalPage("02-route-map.md"))}) -> [State Store Map](${relative(wd.finalPages(), wd.finalPage("05-state-store-map.md"))}).`,
+    `- Orientation: [Entry Overview](${relative(wd.finalPages(), wd.finalPage("00-entry-overview.md"))}) -> [Symbol Directory](${relative(wd.finalPages(), wd.finalPage("11-symbol-directory.md"))}) -> [Module Directory](${relative(wd.finalPages(), wd.finalPage("12-module-directory.md"))}) -> [Route Map](${relative(wd.finalPages(), wd.finalPage("02-route-map.md"))}) -> [State Store Map](${relative(wd.finalPages(), wd.finalPage("05-state-store-map.md"))}).`,
     `- Integration risk: [Extraction Gaps](${relative(wd.finalPages(), wd.finalPage("07-extraction-gaps.md"))}) -> [Service Flow](${relative(wd.finalPages(), wd.finalPage("08-service-flow.md"))}) -> [Debug Artifacts](${relative(wd.finalPages(), wd.finalPage("09-debug-artifacts.md"))}).`,
-    `- Full traceability: [Static Analysis Index](${relative(wd.finalPages(), wd.finalIndexReport())}) -> [Full deterministic report](${relative(wd.finalPages(), wd.finalReport())}) -> JSON artifacts from [Debug Artifacts](${relative(wd.finalPages(), wd.finalPage("09-debug-artifacts.md"))}).`,
+    `- Full traceability: [Static Analysis Index](${relative(wd.finalPages(), wd.finalIndexReport())}) -> [Symbol Directory](${relative(wd.finalPages(), wd.finalPage("11-symbol-directory.md"))}) -> [Module Directory](${relative(wd.finalPages(), wd.finalPage("12-module-directory.md"))}) -> [Full deterministic report](${relative(wd.finalPages(), wd.finalReport())}) -> JSON artifacts from [Debug Artifacts](${relative(wd.finalPages(), wd.finalPage("09-debug-artifacts.md"))}).`,
     "",
   ];
 
@@ -1216,6 +1959,7 @@ function renderDetailedReport(
   wd: AnalyzeWorkdir,
   scope: AnalyzeScope,
   symbols: AnalyzeSymbols,
+  repoIndex: AnalyzeRepoIndex,
   graph: AnalyzeGraph,
   diagrams: AnalyzeDiagram[],
   insights: AnalyzeInsight[],
@@ -1237,6 +1981,7 @@ function renderDetailedReport(
     "## Symbol Summary",
     "",
     `Symbols: ${symbols.symbols.length}`,
+    `Repo-index files: ${repoIndex.fileCount}`,
     "",
     "| Symbol type | Count |",
     "| --- | ---: |",
@@ -1279,6 +2024,7 @@ function renderDetailedReport(
     "## Artifacts",
     "",
     `- Guided index: \`${relative(wd.final(), wd.finalIndexReport())}\``,
+    `- Repo index: \`${relative(wd.final(), wd.repoIndexFile())}\``,
     `- Graph: \`${relative(wd.final(), wd.graphFile())}\``,
     `- Insights: \`${relative(wd.final(), wd.insightsFile())}\``,
     `- Symbols: \`${relative(wd.final(), wd.symbolsFile())}\``,
