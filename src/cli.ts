@@ -11,6 +11,15 @@ import { runReviews, retryIncomplete } from "./stages/review.ts";
 import { runCoverage } from "./stages/coverage.ts";
 import { runAggregate } from "./stages/aggregate.ts";
 import { runArchitecture } from "./stages/architecture.ts";
+import { AnalyzeWorkdir } from "./lib/analyze-workdir.ts";
+import { runAnalyzeScope } from "./stages/analyze/scope.ts";
+import { runAnalyzeSymbols } from "./stages/analyze/symbols.ts";
+import { runAnalyzeGraph } from "./stages/analyze/graph.ts";
+import { runAnalyzeDiagrams } from "./stages/analyze/diagrams.ts";
+import { runAnalyzeInsights } from "./stages/analyze/insights.ts";
+import { runAnalyzeReport } from "./stages/analyze/report.ts";
+import { parsePatternList } from "./stages/analyze/filters.ts";
+import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -19,13 +28,19 @@ function usage(): never {
 
 USAGE:
   prism review <pr-number> [options]
+  prism analyze (--entry <path> | --config <path>) [options]
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
-  --force-stage <name> Force re-run of a single stage (fetch|enumerate|classify|review|coverage|aggregate|architecture)
+  --force-stage <name> Force re-run of a single stage
   --post               Post the final report as a PR comment via gh
   --edit               Edit the last prism comment instead of posting a new one
   --resume             Default behavior: skip stages with existing output
+  --entry <path>       Analyze command: entry TS/TSX file
+  --config <path>      Analyze command: JSON config defaults for entry/depth/filters
+  --depth <n>          Analyze command: traversal depth (default: 2)
+  --include <patterns> Analyze command: comma-separated include globs
+  --exclude <patterns> Analyze command: comma-separated exclude globs
   --help               Show this message
 
 ENV VARS:
@@ -46,6 +61,11 @@ async function main() {
       post: { type: "boolean", default: false },
       edit: { type: "boolean", default: false },
       resume: { type: "boolean", default: false },
+      entry: { type: "string" },
+      config: { type: "string" },
+      depth: { type: "string" },
+      include: { type: "string" },
+      exclude: { type: "string" },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -55,6 +75,85 @@ async function main() {
   if (values.help || positionals.length === 0) usage();
 
   const [cmd, prArg] = positionals;
+  const force = values.force === true;
+  const forceStage = values["force-stage"] as string | undefined;
+  const isForced = (s: string) => force || forceStage === s;
+
+  if (cmd === "analyze") {
+    const configPath = values.config as string | undefined;
+    let analyzeConfig = {};
+    if (configPath) {
+      try {
+        analyzeConfig = await loadAnalyzeConfig(configPath);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "analyze");
+        process.exit(1);
+      }
+    }
+
+    const analyzeInput = resolveAnalyzeInput(
+      {
+        entry: values.entry as string | undefined,
+        depth: values.depth as string | undefined,
+        include: values.include as string | undefined,
+        exclude: values.exclude as string | undefined,
+      },
+      analyzeConfig,
+    );
+
+    const entry = analyzeInput.entry;
+    if (!entry) {
+      log.error("missing required --entry <path>", "analyze");
+      process.exit(1);
+    }
+
+    const depthValue = analyzeInput.depth === undefined ? 2 : Number(analyzeInput.depth);
+    if (!Number.isInteger(depthValue) || depthValue < 0) {
+      log.error(`invalid analyze depth: ${analyzeInput.depth}`, "analyze");
+      process.exit(1);
+    }
+
+    const wd = new AnalyzeWorkdir(entry, depthValue);
+    await wd.ensureAll();
+    const filters = {
+      include: parsePatternList(analyzeInput.include),
+      exclude: parsePatternList(analyzeInput.exclude),
+    };
+
+    log.step(`analyze ${entry} depth=${depthValue} → ${wd.root}`, "init");
+    const scope = await runAnalyzeScope(wd, {
+      force: isForced("scope"),
+      filters,
+    });
+    const symbols = await runAnalyzeSymbols(wd, scope, {
+      force: isForced("symbols"),
+    });
+    const graph = await runAnalyzeGraph(wd, scope, symbols, {
+      force: isForced("graph"),
+    });
+    const diagrams = await runAnalyzeDiagrams(wd, graph, {
+      force: isForced("diagrams"),
+    });
+    const insights = await runAnalyzeInsights(wd, graph, diagrams, {
+      force: isForced("insights"),
+    });
+    await runAnalyzeReport(wd, scope, symbols, graph, diagrams, insights, {
+      force: isForced("report"),
+    });
+
+    log.done(
+      `${scope.files.length} files, ${symbols.symbols.length} symbols, ${graph.edges.length} edges, ${diagrams.length} diagrams, ${insights.insights.length} insights`,
+      "summary",
+    );
+    log.done(wd.graphFile(), "graph");
+    log.done(wd.diagrams(), "diagrams");
+    log.done(wd.insightsFile(), "insights");
+    log.done(wd.finalIndexReport(), "start-here");
+    log.done(wd.finalReport(), "detail-report");
+    return;
+  }
+
   if (cmd !== "review" || !prArg) usage();
 
   const pr = Number(prArg);
@@ -62,10 +161,6 @@ async function main() {
     log.error(`invalid PR number: ${prArg}`);
     process.exit(1);
   }
-
-  const force = values.force === true;
-  const forceStage = values["force-stage"] as string | undefined;
-  const isForced = (s: string) => force || forceStage === s;
 
   const wd = new Workdir(pr);
   await wd.ensureAll();
