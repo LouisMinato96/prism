@@ -7,6 +7,7 @@ V0 is complete enough to hand off. Prism can deterministically analyze one bound
 - [x] Bounded scope from one entry file and `--depth`
 - [x] Config presets via `--config`
 - [x] Symbol extraction for files, imports, exports, components, hooks, stores, services, functions, constants, classes, methods, and types
+- [x] Repo index for compact file, symbol, export, and module inventory
 - [x] Typed graph with deterministic edges
 - [x] Small named diagrams
 - [x] Deterministic insights from persisted facts
@@ -15,6 +16,7 @@ V0 is complete enough to hand off. Prism can deterministically analyze one bound
 - [x] Extraction gaps surfaced explicitly
 - [x] Source references on guided pages 03-08
 - [x] Interpretation guide
+- [x] Symbol directory and module directory pages
 - [x] AST fixture hardening for wrappers, hooks, stores, and route maps
 
 ## How To Run
@@ -38,7 +40,7 @@ Useful flags:
 - `--include <patterns>`: comma-separated allowlist globs
 - `--exclude <patterns>`: comma-separated denylist globs
 - `--force`: re-run every stage
-- `--force-stage <name>`: re-run one stage (`scope`, `symbols`, `graph`, `diagrams`, `insights`, or `report`)
+- `--force-stage <name>`: re-run one stage (`scope`, `symbols`, `repo-index`, `graph`, `diagrams`, `insights`, or `report`)
 
 Config values may use strings or arrays for `include` and `exclude`; CLI flags override config defaults.
 
@@ -67,15 +69,17 @@ Then read `final/pages/10-interpretation-guide.md`. It explains:
 After that, follow the guided pages in order:
 
 1. `00-entry-overview.md`
-2. `01-entry-provider-stack.md`
-3. `02-route-map.md`
-4. `03-context-boundaries.md`
-5. `04-hook-flow.md`
-6. `05-state-store-map.md`
-7. `06-store-surface.md`
-8. `07-extraction-gaps.md`
-9. `08-service-flow.md`
-10. `09-debug-artifacts.md`
+2. `11-symbol-directory.md`
+3. `12-module-directory.md`
+4. `01-entry-provider-stack.md`
+5. `02-route-map.md`
+6. `03-context-boundaries.md`
+7. `04-hook-flow.md`
+8. `05-state-store-map.md`
+9. `06-store-surface.md`
+10. `07-extraction-gaps.md`
+11. `08-service-flow.md`
+12. `09-debug-artifacts.md`
 
 The guided pages 03-08 include source references. `09-debug-artifacts.md` points back to the JSON artifacts. `final/analysis.md` is the full deterministic detail report.
 
@@ -83,13 +87,15 @@ The guided pages 03-08 include source references. `09-debug-artifacts.md` points
 
 ```mermaid
 flowchart LR
-  scope --> symbols --> graph --> diagrams --> insights --> report
+  scope --> symbols --> repoIndex["repo-index"] --> report
+  symbols --> graph --> diagrams --> insights --> report
 ```
 
 | Stage | Responsibility | Output |
 | --- | --- | --- |
 | `scope` | Resolve the entry point and candidate files | `scope.json` |
 | `symbols` | Parse TS/TSX source and extract symbols | `ast-manifest.json`, `symbols.json` |
+| `repo-index` | Build a compact file and symbol inventory | `repo-index.json` |
 | `graph` | Resolve references and build typed nodes and edges | `references.json`, `graph.json` |
 | `diagrams` | Produce small named Mermaid diagrams | `diagrams/*.md` |
 | `insights` | Run deterministic architecture checks | `insights.json` |
@@ -108,6 +114,8 @@ Each stage reads from disk, writes to disk, and skips existing output unless for
 ├── symbols/
 │   ├── ast-manifest.json
 │   └── symbols.json
+├── repo-index/
+│   └── repo-index.json
 ├── graph/
 │   ├── references.json
 │   └── graph.json
@@ -137,7 +145,9 @@ Each stage reads from disk, writes to disk, and skips existing output unless for
     │   ├── 07-extraction-gaps.md
     │   ├── 08-service-flow.md
     │   ├── 09-debug-artifacts.md
-    │   └── 10-interpretation-guide.md
+    │   ├── 10-interpretation-guide.md
+    │   ├── 11-symbol-directory.md
+    │   └── 12-module-directory.md
     └── analysis.md
 ```
 
@@ -244,10 +254,12 @@ Example:
 The V0 report is deterministic and layered:
 
 1. `final/index.md`: start page with counts, reading order, top insights, and diagram size guidance
-2. `final/pages/00-08`: focused guided pages for entry, providers, routes, context, hooks, stores, gaps, and services
-3. `final/pages/09-debug-artifacts.md`: raw artifact guide for graph traversal and proof
-4. `final/pages/10-interpretation-guide.md`: reader guide for source references, extraction gaps, and limits
-5. `final/analysis.md`: full deterministic detail report
+2. `final/pages/11-symbol-directory.md`: symbol, export, and type inventory
+3. `final/pages/12-module-directory.md`: folder/module summaries for scoped files and symbols
+4. `final/pages/00-08`: focused guided pages for entry, providers, routes, context, hooks, stores, gaps, and services
+5. `final/pages/09-debug-artifacts.md`: raw artifact guide for graph traversal and proof
+6. `final/pages/10-interpretation-guide.md`: reader guide for source references, extraction gaps, and limits
+7. `final/analysis.md`: full deterministic detail report
 
 An LLM-assisted narrative can sit on top later, once the underlying facts stay stable.
 
@@ -258,19 +270,22 @@ An LLM-assisted narrative can sit on top later, once the underlying facts stay s
 - V0 does not prove runtime behavior, correctness, security, or performance.
 - V0 does not treat missing edges as proof of absence.
 - V0 does not ask the LLM to discover graph facts.
-- V0 does not produce source references on every page; they are present on guided pages 03-08.
+- V0 does not produce source references on every page; they are present on guided pages 03-08 and summarized through the symbol/module directories.
 - V0 may surface unresolved imports, empty diagrams, or unscoped nodes instead of forcing a guess.
 - V0 is not a repo-wide architecture map.
 
-## What Moves To V1
+## What Moved To Later Versions
 
-- Multi-entry and repo-wide analysis
-- Analysis profiles and rule/lens configuration
-- Better navigation than Markdown-only layered pages
-- Compare runs and architecture drift
-- Cleaner and richer diagrams
-- Better action and data-flow extraction
-- Broader language support
+- V1 added multi-entry orchestration without merging per-entry graphs.
+- V2 added repo-index-backed symbol and module directories.
+- V3 added the deterministic multi-entry architecture page.
+
+Still future work:
+
+- analysis profiles and rule/lens configuration
+- better navigation than Markdown-only layered pages
+- compare runs and architecture drift
+- cleaner and richer diagrams
+- better action and data-flow extraction
+- broader language support
 - CI-oriented workflows
-
-V1 is the next real expansion. V0 is already useful; V1 is where Prism becomes a broader architecture-analysis product.
