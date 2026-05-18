@@ -1631,9 +1631,21 @@ export function Entry() {
       manifest.configDigest,
       "index.md",
     );
+    const architecturePath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      manifest.configDigest,
+      "architecture.md",
+    );
     const index = await readFile(indexPath, "utf8");
+    const architecture = await readFile(architecturePath, "utf8");
     expect(manifest.configDigest).toBe(createAnalyzeInputDigest(analyzeInput, 2));
-    expect(manifest.entries.map((entry) => entry.name)).toEqual(["app-page", "route-entry"]);
+    expect(manifest.entries.map((entry) => entry.name)).toEqual([
+      "app-page",
+      "route-entry",
+    ]);
     expect(manifest.entries.every((entry) => entry.status === "success")).toBe(true);
     expect(index).toContain("- entries: 2");
     expect(index).toContain("- succeeded: 2");
@@ -1644,8 +1656,15 @@ export function Entry() {
     expect(index).toContain("| app-page | success |");
     expect(index).toContain("| route-entry | success |");
     expect(index).toContain("# Static Analysis Multi-Entry Index");
-    expect(index).toMatch(/\[report\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/index\.md\)/);
-    expect(index).toMatch(/\[detail\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/analysis\.md\)/);
+    expect(index).toContain(
+      "[Open deterministic multi-entry architecture overview](architecture.md)",
+    );
+    expect(index).toMatch(
+      /\[report\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/index\.md\)/,
+    );
+    expect(index).toMatch(
+      /\[detail\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/analysis\.md\)/,
+    );
     expect(index).toMatch(
       /\[repo-index\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/repo-index\/repo-index\.json\)/,
     );
@@ -1659,6 +1678,126 @@ export function Entry() {
       expect(entry.artifacts.repoIndex).toContain(`${prismConfig.workdirRoot}/analyze/`);
       expect(entry.counts).toBeDefined();
     }
+    expect(architecture).toContain("# Static Analysis Multi-Entry Architecture");
+    expect(architecture).toContain("- successful entries: 2");
+    expect(architecture).toContain("- skipped failed entries: 0");
+    expect(architecture).toContain("## Entry Cards");
+    expect(architecture).toContain("- Dominant types:");
+    expect(architecture).toContain("- Largest domain:");
+    expect(architecture).toContain("## Relative Size");
+    expect(architecture).toContain("- Symbols:");
+    expect(architecture).toContain("## Entry Comparison");
+    expect(architecture).toContain("| app-page | success |");
+    expect(architecture).toContain("| route-entry | success |");
+    expect(architecture).toContain("## Domain Groups");
+    expect(architecture).toContain("## Top Modules Per Entry");
+    expect(architecture).toContain("### app-page");
+    expect(architecture).toContain("`src/components`");
+    expect(architecture).toContain("## Shared Folder Prefixes");
+    expect(architecture).toContain("`src/app`");
+    expect(architecture).toContain("## Architecture Notes");
+    expect(architecture).toContain("Largest analyzed slice:");
+    expect(architecture).toContain("Strongest shared prefix:");
+    expect(architecture).toMatch(
+      /\[symbols\]\(\.\.\/\.\.\/src__app__page\.tsx-d2-[a-f0-9]{8}\/final\/pages\/11-symbol-directory\.md\)/,
+    );
+    expect(architecture).toMatch(
+      /\[modules\]\(\.\.\/\.\.\/src__routes__Entry\.tsx-d2-[a-f0-9]{8}\/final\/pages\/12-module-directory\.md\)/,
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("analyze multi architecture filters broad shared component roots", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "prism-analyze-multi-domains-"));
+  try {
+    await mkdir(join(baseDir, "src/components/alpha"), { recursive: true });
+    await mkdir(join(baseDir, "src/components/beta"), { recursive: true });
+    await writeFile(
+      join(baseDir, "src/components/alpha/Entry.tsx"),
+      `
+import { AlphaPanel } from "./AlphaPanel";
+
+export function AlphaEntry() {
+  return <AlphaPanel />;
+}
+`,
+    );
+    await writeFile(
+      join(baseDir, "src/components/alpha/AlphaPanel.tsx"),
+      `
+export function AlphaPanel() {
+  return <section>alpha</section>;
+}
+`,
+    );
+    await writeFile(
+      join(baseDir, "src/components/beta/Entry.tsx"),
+      `
+import { BetaPanel } from "./BetaPanel";
+
+export function BetaEntry() {
+  return <BetaPanel />;
+}
+`,
+    );
+    await writeFile(
+      join(baseDir, "src/components/beta/BetaPanel.tsx"),
+      `
+export function BetaPanel() {
+  return <section>beta</section>;
+}
+`,
+    );
+
+    const analyzeInput = resolveAnalyzeInput(
+      {},
+      parseAnalyzeConfigObject({
+        entries: [
+          { path: "src/components/alpha/Entry.tsx", name: "alpha-entry" },
+          { path: "src/components/beta/Entry.tsx", name: "beta-entry" },
+        ],
+        depth: 1,
+        include: ["src/components/**"],
+      }),
+    );
+
+    const manifest = await runAnalyzeMulti(analyzeInput, {
+      baseDir,
+      depth: 1,
+      force: { forceAll: true },
+    });
+    const architecture = await readFile(
+      join(
+        baseDir,
+        prismConfig.workdirRoot,
+        "analyze",
+        "multi",
+        manifest.configDigest,
+        "architecture.md",
+      ),
+      "utf8",
+    );
+
+    expect(architecture).toContain("## Domain Groups");
+    expect(architecture).toContain("`src/components/alpha`");
+    expect(architecture).toContain("`src/components/beta`");
+    expect(architecture).toContain(
+      "No shared folder prefixes were found across successful entries.",
+    );
+    expect(architecture).toContain(
+      "No meaningful shared folder prefix was found after filtering broad roots.",
+    );
+    const differentDomainsSection =
+      architecture.split("## Different Domains")[1]?.split("## Architecture Notes")[0] ??
+      "";
+    expect(differentDomainsSection).toContain(
+      "All domain groups are unique after broad-root filtering. See Domain Groups above.",
+    );
+    expect(differentDomainsSection).not.toContain("### alpha-entry");
+    expect(differentDomainsSection).not.toContain("| `src/components/alpha` |");
+    expect(architecture).not.toContain("| `src/components` |");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -1690,7 +1829,16 @@ test("analyze multi orchestration records failures and continues entries", async
       manifest.configDigest,
       "index.md",
     );
+    const architecturePath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      manifest.configDigest,
+      "architecture.md",
+    );
     const index = await readFile(indexPath, "utf8");
+    const architecture = await readFile(architecturePath, "utf8");
 
     expect(manifest.entries.map((entry) => entry.status)).toEqual(["failed", "success"]);
     expect(manifest.entries[0]?.error).toContain("analyze entry not found");
@@ -1699,6 +1847,12 @@ test("analyze multi orchestration records failures and continues entries", async
     expect(index).toContain("| app-page | success |");
     expect(index).toContain("## Failures");
     expect(index).toContain("- missing-entry: analyze entry not found");
+    expect(architecture).toContain("- successful entries: 1");
+    expect(architecture).toContain("- skipped failed entries: 1");
+    expect(architecture).toContain("| missing-entry | failed | - | - | - | - |");
+    expect(architecture).toContain("| app-page | success |");
+    expect(architecture).toContain("## Skipped Entries");
+    expect(architecture).toContain("- missing-entry: analyze entry not found");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -1728,7 +1882,16 @@ test("analyze multi index is not rewritten when unchanged unless forced", async 
       first.configDigest,
       "index.md",
     );
+    const architecturePath = join(
+      baseDir,
+      prismConfig.workdirRoot,
+      "analyze",
+      "multi",
+      first.configDigest,
+      "architecture.md",
+    );
     const firstStat = await stat(indexPath);
+    const firstArchitectureStat = await stat(architecturePath);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     await runAnalyzeMulti(analyzeInput, {
@@ -1737,7 +1900,9 @@ test("analyze multi index is not rewritten when unchanged unless forced", async 
       force: { forceAll: false },
     });
     const secondStat = await stat(indexPath);
+    const secondArchitectureStat = await stat(architecturePath);
     expect(secondStat.mtimeMs).toBe(firstStat.mtimeMs);
+    expect(secondArchitectureStat.mtimeMs).toBe(firstArchitectureStat.mtimeMs);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     await runAnalyzeMulti(analyzeInput, {
@@ -1746,7 +1911,9 @@ test("analyze multi index is not rewritten when unchanged unless forced", async 
       force: { forceAll: true },
     });
     const thirdStat = await stat(indexPath);
+    const thirdArchitectureStat = await stat(architecturePath);
     expect(thirdStat.mtimeMs).toBeGreaterThan(secondStat.mtimeMs);
+    expect(thirdArchitectureStat.mtimeMs).toBeGreaterThan(secondArchitectureStat.mtimeMs);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
