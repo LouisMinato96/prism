@@ -12,11 +12,13 @@ import { runCoverage } from "./stages/coverage.ts";
 import { runAggregate } from "./stages/aggregate.ts";
 import { runArchitecture } from "./stages/architecture.ts";
 import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts";
+import { resolveKnowledgeBuildOptions } from "./lib/knowledge-options.ts";
 import {
   DEFAULT_MAX_SCOPED_FILES,
   runAnalyzeEntry,
   runAnalyzeMulti,
 } from "./stages/analyze/run.ts";
+import { runKnowledgeBuild } from "./stages/knowledge/build.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -26,6 +28,7 @@ function usage(): never {
 USAGE:
   prism review <pr-number> [options]
   prism analyze (--entry <path> | --config <path>) [options]
+  prism knowledge build [options]
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
@@ -39,6 +42,9 @@ OPTIONS:
   --max-files <n>      Analyze command: max scoped files before failing (default: ${DEFAULT_MAX_SCOPED_FILES})
   --include <patterns> Analyze command: comma-separated include globs
   --exclude <patterns> Analyze command: comma-separated exclude globs
+  --analyze-root <path> Knowledge command: analyze artifacts root (default: .tmp/analyze)
+  --docs-root <path>    Knowledge command: docs root to scan for artifact links (default: docs/prism)
+  --out <path>          Knowledge command: output root (default: .prism/knowledge)
   --help               Show this message
 
 ENV VARS:
@@ -65,6 +71,9 @@ async function main() {
       "max-files": { type: "string" },
       include: { type: "string" },
       exclude: { type: "string" },
+      "analyze-root": { type: "string" },
+      "docs-root": { type: "string" },
+      out: { type: "string" },
       help: { type: "boolean", default: false },
     },
     allowPositionals: true,
@@ -73,10 +82,29 @@ async function main() {
 
   if (values.help || positionals.length === 0) usage();
 
-  const [cmd, prArg] = positionals;
+  const [cmd, subcmd] = positionals;
   const force = values.force === true;
   const forceStage = values["force-stage"] as string | undefined;
   const isForced = (s: string) => force || forceStage === s;
+
+  if (cmd === "knowledge") {
+    if (subcmd !== "build") usage();
+    const knowledge = resolveKnowledgeBuildOptions({
+      "analyze-root": values["analyze-root"] as string | undefined,
+      "docs-root": values["docs-root"] as string | undefined,
+      out: values.out as string | undefined,
+    });
+    const result = await runKnowledgeBuild({
+      analyzeRoot: knowledge.analyzeRoot,
+      docsRoot: knowledge.docsRoot,
+      outRoot: knowledge.outRoot,
+      force,
+    });
+    log.done(result.knowledgePackPath, "knowledge-pack");
+    log.done(result.artifactsIndexPath, "artifacts-index");
+    log.done(result.validationReportPath, "validation");
+    return;
+  }
 
   if (cmd === "analyze") {
     const configPath = values.config as string | undefined;
@@ -183,6 +211,7 @@ async function main() {
     return;
   }
 
+  const prArg = subcmd;
   if (cmd !== "review" || !prArg) usage();
 
   const pr = Number(prArg);

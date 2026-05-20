@@ -2,12 +2,13 @@
 
 `prism` is a deterministic review and static-analysis harness for reliability-focused codebases.
 
-It has two primary capabilities:
+It has three primary capabilities:
 
 | Capability | Command | Purpose | LLM use |
 | --- | --- | --- | --- |
 | Pull request review | `prism review <pr-number>` | Review every AST-derived reviewable unit in a GitHub PR, enforce coverage, and optionally post the result back to GitHub. | Claude is used for classification, review, aggregate reporting, and PR architecture narrative. Coverage is computed by code. |
 | Static analysis | `prism analyze ...` | Analyze one entrypoint or a bounded set of entrypoints in a repo and produce deterministic architecture maps, symbol/module directories, diagrams, insights, and reports. | No LLM. All facts come from source, AST extraction, import traversal, and deterministic graph logic. |
+| Repo knowledge | `prism knowledge build` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs for reuse in future sessions and docs. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
 
 The core promise is the same in both modes: disk-backed stages, deterministic inputs and outputs, bounded work, inspectable failures, and safe reruns.
 
@@ -41,6 +42,7 @@ flowchart TD
   Prism["prism CLI"]
   Prism --> Review["PR review"]
   Prism --> Analyze["Static analysis"]
+  Prism --> Knowledge["Repo knowledge"]
 
   Review --> RFetch["fetch GitHub PR facts"]
   Review --> RUnits["enumerate reviewable units"]
@@ -55,6 +57,10 @@ flowchart TD
   Analyze --> AGraph["build typed graph"]
   Analyze --> ADiagrams["render small diagrams"]
   Analyze --> AReport["write reports"]
+
+  Knowledge --> KLoad["load analyze manifests/artifacts"]
+  Knowledge --> KPack["build knowledge pack + index"]
+  Knowledge --> KValidate["validate links and refs"]
 ```
 
 ## PR Review
@@ -360,11 +366,49 @@ Multi-entry analysis intentionally does not merge graphs, deduplicate symbols ac
 
 Static analysis can prove extracted source facts. It cannot prove runtime behavior, correctness, performance, security, or complete repo understanding. Missing edges are not proof that no relationship exists. Empty diagrams, unresolved imports, and extraction gaps are surfaced explicitly instead of being guessed.
 
+## Repo Knowledge
+
+`prism knowledge build` packages existing `prism analyze` outputs into a deterministic, disk-backed repo knowledge layer.
+
+```bash
+prism knowledge build \
+  --analyze-root .tmp/analyze \
+  --docs-root docs/prism \
+  --out .prism/knowledge
+```
+
+Defaults:
+
+- `--analyze-root`: `.tmp/analyze`
+- `--docs-root`: `docs/prism`
+- `--out`: `.prism/knowledge`
+- `--force`: rewrites outputs even when unchanged
+
+Output files:
+
+```text
+.prism/knowledge/
+├── knowledge-pack.json
+├── artifacts-index.json
+└── validation-report.md
+```
+
+V0 non-goals:
+
+- not a chatbot
+- no Postgres requirement
+- no Obsidian requirement
+- no LLM-inferred architecture facts
+- no graph-merge guessing
+- no PR review pipeline changes
+- no weakened analyze determinism
+
 ## CLI Options
 
 ```text
 prism review <pr-number> [options]
 prism analyze (--entry <path> | --config <path>) [options]
+prism knowledge build [options]
 
 Options:
   --force              Force re-run of all stages
@@ -378,6 +422,9 @@ Options:
   --max-files <n>      Analyze command: scoped file budget
   --include <patterns> Analyze command: comma-separated include globs
   --exclude <patterns> Analyze command: comma-separated exclude globs
+  --analyze-root <path> Knowledge command: analyze artifacts root
+  --docs-root <path>    Knowledge command: docs root for artifact-link validation
+  --out <path>          Knowledge command: output root
 ```
 
 ## Environment
@@ -411,4 +458,5 @@ bun test
 - [`docs/analyze-v0.md`](docs/analyze-v0.md): single-entry static analysis contract.
 - [`docs/analyze-v1.md`](docs/analyze-v1.md): multi-entry orchestration contract.
 - [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): current static-analysis roadmap/status.
+- [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.
