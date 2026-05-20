@@ -185,3 +185,11 @@ export const ArtifactsIndexSchema = z.object({
   docsArtifactLinks: z.array(ArtifactLinkSchema),
 });
 export type ArtifactsIndex = z.infer<typeof ArtifactsIndexSchema>;
+
+export const KnowledgeQuestionsFileSchema = z.union([
+  z.array(z.string()),
+  z.object({
+    questions: z.array(z.string()),
+  }),
+]);
+export type KnowledgeQuestionsFile = z.infer<typeof KnowledgeQuestionsFileSchema>;

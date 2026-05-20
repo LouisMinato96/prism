@@ -8,7 +8,7 @@ It has three primary capabilities:
 | --- | --- | --- | --- |
 | Pull request review | `prism review <pr-number>` | Review every AST-derived reviewable unit in a GitHub PR, enforce coverage, and optionally post the result back to GitHub. | Claude is used for classification, review, aggregate reporting, and PR architecture narrative. Coverage is computed by code. |
 | Static analysis | `prism analyze ...` | Analyze one entrypoint or a bounded set of entrypoints in a repo and produce deterministic architecture maps, symbol/module directories, diagrams, insights, and reports. | No LLM. All facts come from source, AST extraction, import traversal, and deterministic graph logic. |
-| Repo knowledge | `prism knowledge build` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs for reuse in future sessions and docs. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
+| Repo knowledge | `prism knowledge build` + `prism knowledge answer` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs and write grounded answer files for repo questions. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
 
 The core promise is the same in both modes: disk-backed stages, deterministic inputs and outputs, bounded work, inspectable failures, and safe reruns.
 
@@ -403,12 +403,44 @@ V0 non-goals:
 - no PR review pipeline changes
 - no weakened analyze determinism
 
+`prism knowledge answer` writes deterministic, file-backed answers from the generated knowledge artifacts.
+
+Single question:
+
+```bash
+prism knowledge answer \
+  --question "How does auth work?" \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers
+```
+
+Batch questions:
+
+```bash
+prism knowledge answer \
+  --questions-file .prism/knowledge/questions.json \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers
+```
+
+Answers include:
+
+- grounded summary text
+- top matched entries with `start_here` and `detail` links
+- code-file paths resolved against the selected code root (`exists`/`missing`)
+- matched insights
+- deterministic limits and evidence notes
+
 ## CLI Options
 
 ```text
 prism review <pr-number> [options]
 prism analyze (--entry <path> | --config <path>) [options]
 prism knowledge build [options]
+prism knowledge answer --question <text> [options]
+prism knowledge answer --questions-file <path> [options]
 
 Options:
   --force              Force re-run of all stages
@@ -424,7 +456,14 @@ Options:
   --exclude <patterns> Analyze command: comma-separated exclude globs
   --analyze-root <path> Knowledge command: analyze artifacts root
   --docs-root <path>    Knowledge command: docs root for artifact-link validation
-  --out <path>          Knowledge command: output root
+  --out <path>          Knowledge build command: output root
+  --knowledge-root <path> Knowledge answer command: knowledge root
+  --code-root <path>      Knowledge answer command: source code repo root
+  --question <text>     Knowledge answer command: single question
+  --questions-file <path> Knowledge answer command: JSON questions file
+  --answer-out <path>   Knowledge answer command: output file for single question
+  --out-dir <path>      Knowledge answer command: answers output directory
+  --top <n>             Knowledge answer command: max evidence rows per section
 ```
 
 ## Environment

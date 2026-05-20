@@ -12,13 +12,17 @@ import { runCoverage } from "./stages/coverage.ts";
 import { runAggregate } from "./stages/aggregate.ts";
 import { runArchitecture } from "./stages/architecture.ts";
 import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts";
-import { resolveKnowledgeBuildOptions } from "./lib/knowledge-options.ts";
+import {
+  resolveKnowledgeAnswerOptions,
+  resolveKnowledgeBuildOptions,
+} from "./lib/knowledge-options.ts";
 import {
   DEFAULT_MAX_SCOPED_FILES,
   runAnalyzeEntry,
   runAnalyzeMulti,
 } from "./stages/analyze/run.ts";
 import { runKnowledgeBuild } from "./stages/knowledge/build.ts";
+import { runKnowledgeAnswer } from "./stages/knowledge/answer.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -29,6 +33,8 @@ USAGE:
   prism review <pr-number> [options]
   prism analyze (--entry <path> | --config <path>) [options]
   prism knowledge build [options]
+  prism knowledge answer --question <text> [options]
+  prism knowledge answer --questions-file <path> [options]
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
@@ -44,7 +50,14 @@ OPTIONS:
   --exclude <patterns> Analyze command: comma-separated exclude globs
   --analyze-root <path> Knowledge command: analyze artifacts root (default: .tmp/analyze)
   --docs-root <path>    Knowledge command: docs root to scan for artifact links (default: docs/prism)
-  --out <path>          Knowledge command: output root (default: .prism/knowledge)
+  --out <path>          Knowledge build command: output root (default: .prism/knowledge)
+  --knowledge-root <path> Knowledge answer command: knowledge root (default: .prism/knowledge)
+  --code-root <path>    Knowledge answer command: source code repo root for evidence paths
+  --question <text>     Knowledge answer command: single question to answer
+  --questions-file <path> Knowledge answer command: JSON file with questions array
+  --answer-out <path>   Knowledge answer command: output file for single question
+  --out-dir <path>      Knowledge answer command: output directory (default: .prism/knowledge/answers)
+  --top <n>             Knowledge answer command: max evidence rows per section (default: 8)
   --help               Show this message
 
 ENV VARS:
@@ -73,6 +86,13 @@ async function main() {
       exclude: { type: "string" },
       "analyze-root": { type: "string" },
       "docs-root": { type: "string" },
+      "knowledge-root": { type: "string" },
+      "code-root": { type: "string" },
+      question: { type: "string" },
+      "questions-file": { type: "string" },
+      "answer-out": { type: "string" },
+      "out-dir": { type: "string" },
+      top: { type: "string" },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -88,22 +108,62 @@ async function main() {
   const isForced = (s: string) => force || forceStage === s;
 
   if (cmd === "knowledge") {
-    if (subcmd !== "build") usage();
-    const knowledge = resolveKnowledgeBuildOptions({
-      "analyze-root": values["analyze-root"] as string | undefined,
-      "docs-root": values["docs-root"] as string | undefined,
-      out: values.out as string | undefined,
-    });
-    const result = await runKnowledgeBuild({
-      analyzeRoot: knowledge.analyzeRoot,
-      docsRoot: knowledge.docsRoot,
-      outRoot: knowledge.outRoot,
-      force,
-    });
-    log.done(result.knowledgePackPath, "knowledge-pack");
-    log.done(result.artifactsIndexPath, "artifacts-index");
-    log.done(result.validationReportPath, "validation");
-    return;
+    if (subcmd === "build") {
+      const knowledge = resolveKnowledgeBuildOptions({
+        "analyze-root": values["analyze-root"] as string | undefined,
+        "docs-root": values["docs-root"] as string | undefined,
+        out: values.out as string | undefined,
+      });
+      const result = await runKnowledgeBuild({
+        analyzeRoot: knowledge.analyzeRoot,
+        docsRoot: knowledge.docsRoot,
+        outRoot: knowledge.outRoot,
+        force,
+      });
+      log.done(result.knowledgePackPath, "knowledge-pack");
+      log.done(result.artifactsIndexPath, "artifacts-index");
+      log.done(result.validationReportPath, "validation");
+      return;
+    }
+
+    if (subcmd === "answer") {
+      let answerOptions: ReturnType<typeof resolveKnowledgeAnswerOptions>;
+      try {
+        answerOptions = resolveKnowledgeAnswerOptions({
+          "knowledge-root": values["knowledge-root"] as string | undefined,
+          "code-root": values["code-root"] as string | undefined,
+          question: values.question as string | undefined,
+          "questions-file": values["questions-file"] as string | undefined,
+          "answer-out": values["answer-out"] as string | undefined,
+          "out-dir": values["out-dir"] as string | undefined,
+          top: values.top as string | undefined,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "knowledge:answer");
+        process.exit(1);
+      }
+
+      const result = await runKnowledgeAnswer({
+        knowledgeRoot: answerOptions.knowledgeRoot,
+        codeRoot: answerOptions.codeRoot,
+        question: answerOptions.question,
+        questionsFile: answerOptions.questionsFile,
+        answerOut: answerOptions.answerOut,
+        outDir: answerOptions.outDir,
+        top: answerOptions.top,
+        force,
+      });
+      for (const answer of result.answers) {
+        log.done(`${answer.question} -> ${answer.outputPath}`, "answer");
+      }
+      if (result.indexPath) {
+        log.done(result.indexPath, "answers-index");
+      }
+      return;
+    }
+
+    usage();
   }
 
   if (cmd === "analyze") {

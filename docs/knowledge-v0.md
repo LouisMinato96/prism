@@ -6,6 +6,12 @@ V0 adds a deterministic, disk-backed knowledge packaging command:
 prism knowledge build
 ```
 
+It also supports deterministic file-backed question answering from built artifacts:
+
+```bash
+prism knowledge answer
+```
+
 It turns existing `prism analyze` outputs into compact reusable artifacts for future repository development and grounded Q&A.
 
 ## Goals
@@ -72,6 +78,36 @@ prism knowledge build \
 - malformed artifacts
 - docs missing artifact links
 - duplicate or stale-looking run signals
+
+## Deterministic Answers
+
+Single question:
+
+```bash
+prism knowledge answer \
+  --question "How does auth work?" \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers
+```
+
+Batch questions:
+
+```bash
+prism knowledge answer \
+  --questions-file .prism/knowledge/questions.json \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers
+```
+
+Answer files are Markdown and include:
+
+- grounded summary text
+- evidence entries with artifact links (`final/index.md`, `final/analysis.md`)
+- code-file paths resolved against code root with `exists`/`missing` status
+- matched insights
+- deterministic limits and gaps notes
 
 ## Determinism Notes
 

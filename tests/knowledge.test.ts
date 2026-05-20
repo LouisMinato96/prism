@@ -4,12 +4,16 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveKnowledgeBuildOptions } from "../src/lib/knowledge-options.ts";
+import {
+  resolveKnowledgeAnswerOptions,
+  resolveKnowledgeBuildOptions,
+} from "../src/lib/knowledge-options.ts";
 import {
   discoverAnalyzeEntryWorkdirs,
   discoverAnalyzeMultiRunRoots,
   runKnowledgeBuild,
 } from "../src/stages/knowledge/build.ts";
+import { runKnowledgeAnswer } from "../src/stages/knowledge/answer.ts";
 
 test("knowledge build discovers multi-run and single-entry analyze artifacts", async () => {
   const baseDir = await createKnowledgeFixtureProject();
@@ -173,6 +177,156 @@ test("knowledge options resolver applies defaults and trims custom roots", () =>
   });
 });
 
+test("knowledge answer options resolver validates mode and defaults", () => {
+  expect(
+    resolveKnowledgeAnswerOptions({
+      question: "How auth works",
+    }),
+  ).toEqual({
+    knowledgeRoot: ".prism/knowledge",
+    codeRoot: undefined,
+    question: "How auth works",
+    questionsFile: undefined,
+    answerOut: undefined,
+    outDir: ".prism/knowledge/answers",
+    top: 8,
+  });
+
+  expect(() =>
+    resolveKnowledgeAnswerOptions({
+      question: "x",
+      "questions-file": ".tmp/questions.json",
+    }),
+  ).toThrow("either --question or --questions-file");
+});
+
+test("knowledge answer writes deterministic evidence file for a single question", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+
+    expect(result.answers).toHaveLength(1);
+    const answerPath = result.answers[0]!.outputPath;
+    expect(existsSync(answerPath)).toBe(true);
+    const content = await readFile(answerPath, "utf8");
+    expect(content).toContain("# Prism Knowledge Answer");
+    expect(content).toContain("How app page works");
+    expect(content).toContain("- code root:");
+    expect(content).toContain("code_file:");
+    expect(content).toContain("Evidence Entries");
+    expect(content).toContain("Evidence Insights");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer supports questions file and writes batch index", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    await writeFile(
+      join(baseDir, ".tmp", "questions.json"),
+      JSON.stringify(
+        {
+          questions: ["How auth works", "Which entries failed"],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: ".tmp/questions.json",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+
+    expect(result.answers).toHaveLength(2);
+    expect(result.indexPath).toBeDefined();
+    expect(result.indexPath && existsSync(result.indexPath)).toBe(true);
+    const batchIndex = await readFile(result.indexPath!, "utf8");
+    expect(batchIndex).toContain("Prism Knowledge Answers");
+    expect(batchIndex).toContain("How auth works");
+    expect(batchIndex).toContain("Which entries failed");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer skips unchanged output unless forced", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const first = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How auth works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+    const firstStat = await stat(first.answers[0]!.outputPath);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How auth works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: false,
+    });
+    const secondStat = await stat(second.answers[0]!.outputPath);
+    expect(secondStat.mtimeMs).toBe(firstStat.mtimeMs);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const forced = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How auth works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+    const forcedStat = await stat(forced.answers[0]!.outputPath);
+    expect(forcedStat.mtimeMs).toBeGreaterThan(secondStat.mtimeMs);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge cli parses custom roots and writes output to custom out path", async () => {
   const baseDir = await createKnowledgeFixtureProject();
   try {
@@ -213,6 +367,42 @@ test("knowledge cli parses custom roots and writes output to custom out path", a
     };
     expect(pack.analyzeRoot).toBe(".tmp/analyze");
     expect(pack.docsRoot).toBe("docs/prism");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge cli writes answer output from --question", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    const build = Bun.spawnSync({
+      cmd: ["bun", cliPath, "knowledge", "build", "--force"],
+      cwd: baseDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(build.exitCode).toBe(0);
+
+    const answer = Bun.spawnSync({
+      cmd: [
+        "bun",
+        cliPath,
+        "knowledge",
+        "answer",
+        "--question",
+        "How auth works",
+        "--out-dir",
+        ".prism/knowledge/answers",
+        "--force",
+      ],
+      cwd: baseDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(answer.exitCode).toBe(0);
+    const answerPath = join(baseDir, ".prism/knowledge/answers/how-auth-works.md");
+    expect(existsSync(answerPath)).toBe(true);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
