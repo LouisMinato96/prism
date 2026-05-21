@@ -17,6 +17,15 @@ export interface ResolvedKnowledgeAnswerOptions {
   minConfidence?: "low" | "medium" | "high";
 }
 
+export interface ResolvedKnowledgeUpdateOptions {
+  repoRoot: string;
+  knowledgeRoot: string;
+  from: string;
+  to: string;
+  batchSize: number;
+  dryRun: boolean;
+}
+
 export function resolveKnowledgeBuildOptions(values: {
   "analyze-root"?: string;
   "docs-root"?: string;
@@ -26,6 +35,39 @@ export function resolveKnowledgeBuildOptions(values: {
     analyzeRoot: cleanOption(values["analyze-root"], ".tmp/analyze"),
     docsRoot: cleanOption(values["docs-root"], "docs/prism"),
     outRoot: cleanOption(values.out, ".prism/knowledge"),
+  };
+}
+
+export function resolveKnowledgeUpdateOptions(values: {
+  "repo-root"?: string;
+  "knowledge-root"?: string;
+  from?: string;
+  to?: string;
+  "batch-size"?: string;
+  "dry-run"?: boolean;
+  apply?: boolean;
+}): ResolvedKnowledgeUpdateOptions {
+  const repoRoot = cleanOption(values["repo-root"], ".");
+  const knowledgeRoot = cleanOption(values["knowledge-root"], ".prism/knowledge");
+  const from = cleanOptional(values.from);
+  const to = cleanOptional(values.to);
+  const batchSizeRaw = cleanOptional(values["batch-size"]);
+  const batchSize = batchSizeRaw === undefined ? 20 : Number(batchSizeRaw);
+  const dryRun = values.apply === true ? false : values["dry-run"] !== false;
+
+  if (!from) throw new Error("knowledge update requires --from <commit>");
+  if (!to) throw new Error("knowledge update requires --to <commit>");
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error(`invalid --batch-size value: ${values["batch-size"]}`);
+  }
+
+  return {
+    repoRoot,
+    knowledgeRoot,
+    from,
+    to,
+    batchSize,
+    dryRun,
   };
 }
 

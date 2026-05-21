@@ -12,6 +12,12 @@ It also supports deterministic file-backed question answering from built artifac
 prism knowledge answer
 ```
 
+Incremental refresh is available through:
+
+```bash
+prism knowledge update
+```
+
 It turns existing `prism analyze` outputs into compact reusable artifacts for future repository development and grounded Q&A.
 
 ## Goals
@@ -79,6 +85,44 @@ prism knowledge build \
 - docs missing artifact links
 - duplicate or stale-looking run signals
 - contradiction signals (when detectable from artifact conflicts)
+
+Update history/state outputs:
+
+```text
+.prism/knowledge/
+├── state.json
+└── history/updates/
+    ├── <timestamp>-<from>-<to>.json
+    └── <timestamp>-<from>-<to>.md
+```
+
+Update schema contract:
+
+- See [`docs/knowledge-update-schema.md`](./knowledge-update-schema.md).
+
+Dry-run planning example (default mode):
+
+```bash
+prism knowledge update \
+  --repo-root /abs/target-repo \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --from <commit> \
+  --to <commit> \
+  --batch-size 20
+```
+
+Apply mode example (selective refresh + rebuild):
+
+```bash
+prism knowledge update \
+  --repo-root /abs/target-repo \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --from <commit> \
+  --to <commit> \
+  --batch-size 20 \
+  --apply \
+  --force
+```
 
 ## Deterministic Answers
 

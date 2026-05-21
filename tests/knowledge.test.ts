@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   resolveKnowledgeAnswerOptions,
   resolveKnowledgeBuildOptions,
+  resolveKnowledgeUpdateOptions,
 } from "../src/lib/knowledge-options.ts";
 import {
   discoverAnalyzeEntryWorkdirs,
@@ -17,6 +18,7 @@ import {
   classifyIntent,
   runKnowledgeAnswer,
 } from "../src/stages/knowledge/answer.ts";
+import { runKnowledgeUpdate } from "../src/stages/knowledge/update.ts";
 
 test("knowledge build discovers multi-run and single-entry analyze artifacts", async () => {
   const baseDir = await createKnowledgeFixtureProject();
@@ -249,6 +251,257 @@ test("knowledge answer options resolver validates mode and defaults", () => {
       "min-confidence": "bad",
     }),
   ).toThrow("invalid --min-confidence value");
+});
+
+test("knowledge update options resolver validates defaults and required fields", () => {
+  expect(
+    resolveKnowledgeUpdateOptions({
+      from: "abc1234",
+      to: "def5678",
+    }),
+  ).toEqual({
+    repoRoot: ".",
+    knowledgeRoot: ".prism/knowledge",
+    from: "abc1234",
+    to: "def5678",
+    batchSize: 20,
+    dryRun: true,
+  });
+
+  expect(
+    resolveKnowledgeUpdateOptions({
+      "repo-root": " repo ",
+      "knowledge-root": " .prism/custom ",
+      from: "abc",
+      to: "def",
+      "batch-size": "5",
+      "dry-run": true,
+    }),
+  ).toEqual({
+    repoRoot: "repo",
+    knowledgeRoot: ".prism/custom",
+    from: "abc",
+    to: "def",
+    batchSize: 5,
+    dryRun: true,
+  });
+
+  expect(
+    resolveKnowledgeUpdateOptions({
+      from: "abc",
+      to: "def",
+      apply: true,
+    }),
+  ).toEqual({
+    repoRoot: ".",
+    knowledgeRoot: ".prism/knowledge",
+    from: "abc",
+    to: "def",
+    batchSize: 20,
+    dryRun: false,
+  });
+
+  expect(() =>
+    resolveKnowledgeUpdateOptions({
+      to: "def",
+    }),
+  ).toThrow("requires --from");
+  expect(() =>
+    resolveKnowledgeUpdateOptions({
+      from: "abc",
+    }),
+  ).toThrow("requires --to");
+  expect(() =>
+    resolveKnowledgeUpdateOptions({
+      from: "abc",
+      to: "def",
+      "batch-size": "0",
+    }),
+  ).toThrow("invalid --batch-size");
+});
+
+test("knowledge update dry-run writes deterministic report artifacts", async () => {
+  const baseDir = await createKnowledgeUpdateFixtureProject();
+  try {
+    const { repoRoot, fromCommit, toCommit } = await resolveFixtureRepoCommits(baseDir);
+
+    const first = await runKnowledgeUpdate({
+      baseDir,
+      repoRoot,
+      knowledgeRoot: ".prism/knowledge",
+      from: fromCommit,
+      to: toCommit,
+      batchSize: 1,
+      dryRun: true,
+      force: true,
+    });
+
+    expect(existsSync(first.reportPath)).toBe(true);
+    expect(existsSync(first.reportMarkdownPath)).toBe(true);
+    expect(first.report.mode).toBe("dry-run");
+    expect(first.report.commitCount).toBe(4);
+    expect(first.report.slices).toHaveLength(4);
+    expect(first.report.changeCount).toBe(4);
+    expect(first.report.changeSummary).toEqual({
+      total: 4,
+      added: 1,
+      modified: 1,
+      deleted: 1,
+      renamed: 1,
+    });
+    expect(first.report.impactSummary).toEqual({
+      impactedEntries: 2,
+      staleEntries: 1,
+      unmappedChanges: 1,
+    });
+    expect(first.report.impacts.map((impact) => impact.entryName)).toEqual([
+      "entry-alpha",
+      "entry-beta",
+    ]);
+    expect(first.report.impacts[1]).toEqual(
+      expect.objectContaining({
+        entryName: "entry-beta",
+        stale: true,
+      }),
+    );
+    expect(first.report.unmappedChanges).toEqual([
+      expect.objectContaining({
+        status: "deleted",
+        path: "gamma.ts",
+      }),
+    ]);
+    expect(first.report.changes.map((change) => change.status)).toEqual([
+      "modified",
+      "added",
+      "renamed",
+      "deleted",
+    ]);
+    expect(first.report.changes[2]).toEqual(
+      expect.objectContaining({
+        status: "renamed",
+        previousPath: "beta.ts",
+        path: "gamma.ts",
+      }),
+    );
+    expect(first.report.notes.length).toBeGreaterThan(0);
+
+    const firstStat = await stat(first.reportPath);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await runKnowledgeUpdate({
+      baseDir,
+      repoRoot,
+      knowledgeRoot: ".prism/knowledge",
+      from: fromCommit,
+      to: toCommit,
+      batchSize: 1,
+      dryRun: true,
+      force: false,
+    });
+    const secondStat = await stat(second.reportPath);
+
+    expect(second.reportPath).toBe(first.reportPath);
+    expect(second.reportMarkdownPath).toBe(first.reportMarkdownPath);
+    expect(secondStat.mtimeMs).toBe(firstStat.mtimeMs);
+
+    const markdown = await readFile(first.reportMarkdownPath, "utf8");
+    expect(markdown).toContain("# Prism Knowledge Update Report");
+    expect(markdown).toContain("## Commits");
+    expect(markdown).toContain("## Changed Files");
+    expect(markdown).toContain("## Impacted Entries");
+    expect(markdown).toContain("## Unmapped Changes");
+    expect(markdown).toContain("## Planned Batches");
+    const state = JSON.parse(
+      await readFile(join(baseDir, ".prism/knowledge/state.json"), "utf8"),
+    ) as {
+      latestMode: string;
+      latestReportPath: string;
+      appliedUpdates: unknown[];
+    };
+    expect(state.latestMode).toBe("dry-run");
+    expect(state.latestReportPath.endsWith(".json")).toBe(true);
+    expect(state.appliedUpdates).toHaveLength(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge update reports missing mapping context when artifacts index is absent", async () => {
+  const baseDir = await createKnowledgeUpdateFixtureProject();
+  try {
+    await rm(join(baseDir, ".prism/knowledge/artifacts-index.json"), { force: true });
+    const { repoRoot, fromCommit, toCommit } = await resolveFixtureRepoCommits(baseDir);
+
+    const result = await runKnowledgeUpdate({
+      baseDir,
+      repoRoot,
+      knowledgeRoot: ".prism/knowledge",
+      from: fromCommit,
+      to: toCommit,
+      batchSize: 20,
+      dryRun: true,
+      force: true,
+    });
+
+    expect(result.report.impactSummary).toEqual({
+      impactedEntries: 0,
+      staleEntries: 0,
+      unmappedChanges: result.report.changeCount,
+    });
+    expect(result.report.notes).toContainEqual(
+      expect.stringContaining("Mapping context missing"),
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge update apply mode refreshes impacted entries and rebuilds knowledge", async () => {
+  const baseDir = await createKnowledgeUpdateFixtureProject();
+  try {
+    const { repoRoot, fromCommit, toCommit } = await resolveFixtureRepoCommits(baseDir);
+    const result = await runKnowledgeUpdate({
+      baseDir,
+      repoRoot,
+      knowledgeRoot: ".prism/knowledge",
+      from: fromCommit,
+      to: toCommit,
+      batchSize: 20,
+      dryRun: false,
+      force: true,
+    });
+
+    expect(result.report.mode).toBe("apply");
+    expect(result.report.execution).toEqual(
+      expect.objectContaining({
+        targetEntries: 1,
+        skippedStaleEntries: 1,
+        attemptedEntries: 1,
+        succeededEntries: 1,
+        failedEntries: 0,
+        rebuiltKnowledge: true,
+      }),
+    );
+    expect(existsSync(join(baseDir, ".prism/knowledge/knowledge-pack.json"))).toBe(true);
+    expect(existsSync(join(baseDir, ".prism/knowledge/artifacts-index.json"))).toBe(true);
+    const state = JSON.parse(
+      await readFile(join(baseDir, ".prism/knowledge/state.json"), "utf8"),
+    ) as {
+      latestMode: string;
+      lastAppliedReportPath?: string;
+      appliedUpdates: Array<{ resolvedFrom: string; resolvedTo: string }>;
+    };
+    expect(state.latestMode).toBe("apply");
+    expect(state.lastAppliedReportPath?.endsWith(".json")).toBe(true);
+    expect(state.appliedUpdates).toHaveLength(1);
+    expect(state.appliedUpdates[0]).toEqual(
+      expect.objectContaining({
+        resolvedFrom: result.report.resolvedFrom,
+        resolvedTo: result.report.resolvedTo,
+      }),
+    );
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
 });
 
 test("knowledge answer classifies deterministic intents and precedence", () => {
@@ -785,6 +1038,244 @@ test("knowledge cli strict mode exits non-zero after writing answer files", asyn
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+
+test("knowledge cli update writes dry-run report artifacts", async () => {
+  const baseDir = await createKnowledgeUpdateFixtureProject();
+  try {
+    const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    const { fromCommit, toCommit } = await resolveFixtureRepoCommits(baseDir);
+    const update = Bun.spawnSync({
+      cmd: [
+        "bun",
+        cliPath,
+        "knowledge",
+        "update",
+        "--repo-root",
+        "repo",
+        "--knowledge-root",
+        ".prism/knowledge",
+        "--from",
+        fromCommit,
+        "--to",
+        toCommit,
+        "--batch-size",
+        "2",
+        "--dry-run",
+        "--force",
+      ],
+      cwd: baseDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(update.exitCode).toBe(0);
+    const out = Buffer.from(update.stdout).toString("utf8");
+    expect(out).toContain("[update-report]");
+    expect(out).toContain("[update-report-md]");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+async function createKnowledgeUpdateFixtureProject(): Promise<string> {
+  const baseDir = await mkdtemp(join(tmpdir(), "prism-knowledge-update-"));
+  const repoRoot = join(baseDir, "repo");
+  const knowledgeRoot = join(baseDir, ".prism/knowledge");
+  const analyzeRoot = join(baseDir, ".tmp/analyze");
+  const multiRunRoot = join(analyzeRoot, "multi", "abc123def456");
+  const docsRoot = join(baseDir, "docs/prism");
+  await mkdir(repoRoot, { recursive: true });
+  await mkdir(knowledgeRoot, { recursive: true });
+  await mkdir(multiRunRoot, { recursive: true });
+  await mkdir(docsRoot, { recursive: true });
+
+  runGit(repoRoot, ["init", "-q"]);
+  runGit(repoRoot, ["config", "user.name", "Prism Test"]);
+  runGit(repoRoot, ["config", "user.email", "prism@example.com"]);
+  runGit(repoRoot, ["config", "commit.gpgsign", "false"]);
+
+  await writeFile(join(repoRoot, "alpha.ts"), "export const alpha = 1;\n");
+  runGit(repoRoot, ["add", "alpha.ts"]);
+  runGit(
+    repoRoot,
+    ["commit", "-m", "feat: add alpha"],
+    fixedGitEnv("2026-05-20T00:00:00Z"),
+  );
+
+  await writeFile(join(repoRoot, "alpha.ts"), "export const alpha = 2;\n");
+  runGit(repoRoot, ["add", "alpha.ts"]);
+  runGit(
+    repoRoot,
+    ["commit", "-m", "chore: tune alpha"],
+    fixedGitEnv("2026-05-20T01:00:00Z"),
+  );
+
+  await writeFile(join(repoRoot, "beta.ts"), "export const beta = 1;\n");
+  runGit(repoRoot, ["add", "beta.ts"]);
+  runGit(
+    repoRoot,
+    ["commit", "-m", "feat: add beta"],
+    fixedGitEnv("2026-05-20T02:00:00Z"),
+  );
+
+  runGit(repoRoot, ["mv", "beta.ts", "gamma.ts"]);
+  runGit(
+    repoRoot,
+    ["commit", "-m", "refactor: rename beta to gamma"],
+    fixedGitEnv("2026-05-20T03:00:00Z"),
+  );
+
+  runGit(repoRoot, ["rm", "gamma.ts"]);
+  runGit(
+    repoRoot,
+    ["commit", "-m", "chore: remove gamma"],
+    fixedGitEnv("2026-05-20T04:00:00Z"),
+  );
+
+  const index = {
+    schemaVersion: 1,
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    analyzeRoot: ".tmp/analyze",
+    docsRoot: "docs/prism",
+    outRoot: ".prism/knowledge",
+    multiRunDigest: "abc123def456",
+    runs: [
+      {
+        configDigest: "abc123def456",
+        runRoot: ".tmp/analyze/multi/abc123def456",
+        manifest: ".tmp/analyze/multi/abc123def456/manifest.json",
+        index: ".tmp/analyze/multi/abc123def456/index.md",
+        architecture: ".tmp/analyze/multi/abc123def456/architecture.md",
+        entries: [
+          {
+            name: "entry-alpha",
+            path: "alpha.ts",
+            status: "success",
+            workdir: ".tmp/analyze/alpha",
+            scope: ".tmp/analyze/alpha/scope/scope.json",
+            symbols: ".tmp/analyze/alpha/symbols/symbols.json",
+            repoIndex: ".tmp/analyze/alpha/repo-index/repo-index.json",
+            insights: ".tmp/analyze/alpha/insights/insights.json",
+            finalIndex: ".tmp/analyze/alpha/final/index.md",
+            finalReport: ".tmp/analyze/alpha/final/analysis.md",
+            symbolDirectoryPage: ".tmp/analyze/alpha/final/pages/11-symbol-directory.md",
+            moduleDirectoryPage: ".tmp/analyze/alpha/final/pages/12-module-directory.md",
+          },
+          {
+            name: "entry-beta",
+            path: "beta.ts",
+            status: "success",
+            workdir: ".tmp/analyze/beta",
+            scope: ".tmp/analyze/beta/scope/scope.json",
+            symbols: ".tmp/analyze/beta/symbols/symbols.json",
+            repoIndex: ".tmp/analyze/beta/repo-index/repo-index.json",
+            insights: ".tmp/analyze/beta/insights/insights.json",
+            finalIndex: ".tmp/analyze/beta/final/index.md",
+            finalReport: ".tmp/analyze/beta/final/analysis.md",
+            symbolDirectoryPage: ".tmp/analyze/beta/final/pages/11-symbol-directory.md",
+            moduleDirectoryPage: ".tmp/analyze/beta/final/pages/12-module-directory.md",
+          },
+        ],
+      },
+    ],
+    discoveredEntryWorkdirs: [],
+    orphanEntryWorkdirs: [],
+    docsArtifactLinks: [],
+  };
+  await writeFile(
+    join(knowledgeRoot, "artifacts-index.json"),
+    JSON.stringify(index, null, 2) + "\n",
+  );
+  await writeFile(join(multiRunRoot, "index.md"), "# update fixture\n");
+  await writeFile(join(multiRunRoot, "architecture.md"), "# update fixture\n");
+  await writeFile(
+    join(multiRunRoot, "manifest.json"),
+    JSON.stringify(
+      {
+        configDigest: "abc123def456",
+        config: {
+          depth: 1,
+          maxFiles: 1000,
+          include: [],
+          exclude: [],
+        },
+        entries: [
+          {
+            name: "entry-alpha",
+            path: "alpha.ts",
+            workdir: ".tmp/analyze/alpha",
+            status: "success",
+            artifacts: {
+              scope: ".tmp/analyze/alpha/scope/scope.json",
+              symbols: ".tmp/analyze/alpha/symbols/symbols.json",
+              repoIndex: ".tmp/analyze/alpha/repo-index/repo-index.json",
+              graph: ".tmp/analyze/alpha/graph/graph.json",
+              insights: ".tmp/analyze/alpha/insights/insights.json",
+              diagramsManifest: ".tmp/analyze/alpha/diagrams/manifest.json",
+              finalIndex: ".tmp/analyze/alpha/final/index.md",
+              finalReport: ".tmp/analyze/alpha/final/analysis.md",
+            },
+          },
+          {
+            name: "entry-beta",
+            path: "beta.ts",
+            workdir: ".tmp/analyze/beta",
+            status: "success",
+            artifacts: {
+              scope: ".tmp/analyze/beta/scope/scope.json",
+              symbols: ".tmp/analyze/beta/symbols/symbols.json",
+              repoIndex: ".tmp/analyze/beta/repo-index/repo-index.json",
+              graph: ".tmp/analyze/beta/graph/graph.json",
+              insights: ".tmp/analyze/beta/insights/insights.json",
+              diagramsManifest: ".tmp/analyze/beta/diagrams/manifest.json",
+              finalIndex: ".tmp/analyze/beta/final/index.md",
+              finalReport: ".tmp/analyze/beta/final/analysis.md",
+            },
+          },
+        ],
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  await writeFile(join(docsRoot, "index.md"), "# prism docs\n");
+
+  return baseDir;
+}
+
+async function resolveFixtureRepoCommits(baseDir: string): Promise<{
+  repoRoot: string;
+  fromCommit: string;
+  toCommit: string;
+}> {
+  const repoRoot = join(baseDir, "repo");
+  const fromCommit = runGit(repoRoot, ["rev-list", "--max-parents=0", "HEAD"]).trim();
+  const toCommit = runGit(repoRoot, ["rev-parse", "HEAD"]).trim();
+  return { repoRoot: "repo", fromCommit, toCommit };
+}
+
+function runGit(cwd: string, args: string[], env?: Record<string, string>): string {
+  const proc = Bun.spawnSync({
+    cmd: ["git", ...args],
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
+  if (proc.exitCode !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${Buffer.from(proc.stderr).toString("utf8")}`,
+    );
+  }
+  return Buffer.from(proc.stdout).toString("utf8");
+}
+
+function fixedGitEnv(iso: string): Record<string, string> {
+  return {
+    GIT_AUTHOR_DATE: iso,
+    GIT_COMMITTER_DATE: iso,
+  };
+}
 
 async function createKnowledgeFixtureProject(): Promise<string> {
   const baseDir = await mkdtemp(join(tmpdir(), "prism-knowledge-fixture-"));

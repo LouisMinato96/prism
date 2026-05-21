@@ -8,7 +8,7 @@ It has three primary capabilities:
 | --- | --- | --- | --- |
 | Pull request review | `prism review <pr-number>` | Review every AST-derived reviewable unit in a GitHub PR, enforce coverage, and optionally post the result back to GitHub. | Claude is used for classification, review, aggregate reporting, and PR architecture narrative. Coverage is computed by code. |
 | Static analysis | `prism analyze ...` | Analyze one entrypoint or a bounded set of entrypoints in a repo and produce deterministic architecture maps, symbol/module directories, diagrams, insights, and reports. | No LLM. All facts come from source, AST extraction, import traversal, and deterministic graph logic. |
-| Repo knowledge | `prism knowledge build` + `prism knowledge answer` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs and write grounded answer files for repo questions. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
+| Repo knowledge | `prism knowledge build` + `prism knowledge answer` + `prism knowledge update` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs, write grounded answer files, and apply deterministic incremental refresh from git commit ranges. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
 
 The core promise is the same in both modes: disk-backed stages, deterministic inputs and outputs, bounded work, inspectable failures, and safe reruns.
 
@@ -475,6 +475,46 @@ bun bin/prism knowledge answer \
   --force
 ```
 
+`prism knowledge update` supports deterministic commit-range refresh planning (default dry-run) and apply mode for selective re-analysis.
+
+Dry-run planning (default):
+
+```bash
+prism knowledge update \
+  --repo-root /abs/target-repo \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --from <commit> \
+  --to <commit> \
+  --batch-size 20
+```
+
+Apply mode (selective refresh + rebuild):
+
+```bash
+prism knowledge update \
+  --repo-root /abs/target-repo \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --from <commit> \
+  --to <commit> \
+  --batch-size 20 \
+  --apply \
+  --force
+```
+
+Update artifacts:
+
+```text
+.prism/knowledge/
+├── state.json
+└── history/updates/
+    ├── <timestamp>-<from>-<to>.json
+    └── <timestamp>-<from>-<to>.md
+```
+
+Update report/state schema contract:
+
+- See [`docs/knowledge-update-schema.md`](docs/knowledge-update-schema.md).
+
 ## CLI Options
 
 ```text
@@ -483,6 +523,7 @@ prism analyze (--entry <path> | --config <path>) [options]
 prism knowledge build [options]
 prism knowledge answer --question <text> [options]
 prism knowledge answer --questions-file <path> [options]
+prism knowledge update --from <commit> --to <commit> [options]
 
 Options:
   --force              Force re-run of all stages
@@ -499,8 +540,14 @@ Options:
   --analyze-root <path> Knowledge command: analyze artifacts root
   --docs-root <path>    Knowledge command: docs root for artifact-link validation
   --out <path>          Knowledge build command: output root
-  --knowledge-root <path> Knowledge answer command: knowledge root
+  --knowledge-root <path> Knowledge answer/update command: knowledge root
+  --repo-root <path>      Knowledge update command: git repo root
   --code-root <path>      Knowledge answer command: source code repo root
+  --from <commit>         Knowledge update command: starting commit (exclusive)
+  --to <commit>           Knowledge update command: ending commit (inclusive)
+  --batch-size <n>        Knowledge update command: commit batch size
+  --dry-run               Knowledge update command: planning mode (default when --apply is not set)
+  --apply                 Knowledge update command: execute selective refresh and rebuild
   --question <text>     Knowledge answer command: single question
   --questions-file <path> Knowledge answer command: JSON questions file
   --answer-out <path>   Knowledge answer command: output file for single question
@@ -544,5 +591,7 @@ bun test
 - [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): current static-analysis roadmap/status.
 - [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
 - [`docs/knowledge-answer-schema.md`](docs/knowledge-answer-schema.md): deterministic answer JSON contract and strict diagnostics format.
+- [`docs/knowledge-update-schema.md`](docs/knowledge-update-schema.md): deterministic update report and state schema contract.
 - [`docs/knowledge-v2-prep.md`](docs/knowledge-v2-prep.md): V2 implementation-ready hardening plan.
+- [`docs/knowledge-v3-prep.md`](docs/knowledge-v3-prep.md): V3 implementation-ready incremental-update plan.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.

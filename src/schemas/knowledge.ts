@@ -200,3 +200,156 @@ export const KnowledgeQuestionsFileSchema = z.union([
   }),
 ]);
 export type KnowledgeQuestionsFile = z.infer<typeof KnowledgeQuestionsFileSchema>;
+
+export const KnowledgeUpdateCommitSchema = z.object({
+  sha: z.string(),
+  shortSha: z.string(),
+  authoredAt: z.string(),
+  subject: z.string(),
+});
+export type KnowledgeUpdateCommit = z.infer<typeof KnowledgeUpdateCommitSchema>;
+
+export const KnowledgeUpdateSliceSchema = z.object({
+  index: z.number().int().nonnegative(),
+  fromCommit: z.string(),
+  toCommit: z.string(),
+  commitCount: z.number().int().nonnegative(),
+});
+export type KnowledgeUpdateSlice = z.infer<typeof KnowledgeUpdateSliceSchema>;
+
+export const KnowledgeUpdateChangeStatusSchema = z.enum([
+  "added",
+  "modified",
+  "deleted",
+  "renamed",
+]);
+export type KnowledgeUpdateChangeStatus = z.infer<
+  typeof KnowledgeUpdateChangeStatusSchema
+>;
+
+export const KnowledgeUpdateFileChangeSchema = z.object({
+  commitSha: z.string(),
+  commitShortSha: z.string(),
+  status: KnowledgeUpdateChangeStatusSchema,
+  path: z.string(),
+  previousPath: z.string().optional(),
+});
+export type KnowledgeUpdateFileChange = z.infer<typeof KnowledgeUpdateFileChangeSchema>;
+
+export const KnowledgeUpdateChangeSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  added: z.number().int().nonnegative(),
+  modified: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  renamed: z.number().int().nonnegative(),
+});
+export type KnowledgeUpdateChangeSummary = z.infer<
+  typeof KnowledgeUpdateChangeSummarySchema
+>;
+
+export const KnowledgeUpdateImpactReasonSchema = z.enum([
+  "entry-path-exact",
+  "entry-path-rename-previous",
+  "entry-path-rename-next",
+]);
+export type KnowledgeUpdateImpactReason = z.infer<
+  typeof KnowledgeUpdateImpactReasonSchema
+>;
+
+export const KnowledgeUpdateEntryImpactMatchSchema = z.object({
+  commitSha: z.string(),
+  commitShortSha: z.string(),
+  status: KnowledgeUpdateChangeStatusSchema,
+  path: z.string(),
+  previousPath: z.string().optional(),
+  reason: KnowledgeUpdateImpactReasonSchema,
+  staleSignal: z.boolean(),
+});
+export type KnowledgeUpdateEntryImpactMatch = z.infer<
+  typeof KnowledgeUpdateEntryImpactMatchSchema
+>;
+
+export const KnowledgeUpdateEntryImpactSchema = z.object({
+  runDigest: z.string(),
+  entryName: z.string(),
+  entryPath: z.string(),
+  workdir: z.string(),
+  status: z.enum(["success", "failed"]),
+  stale: z.boolean(),
+  matches: z.array(KnowledgeUpdateEntryImpactMatchSchema),
+});
+export type KnowledgeUpdateEntryImpact = z.infer<typeof KnowledgeUpdateEntryImpactSchema>;
+
+export const KnowledgeUpdateImpactSummarySchema = z.object({
+  impactedEntries: z.number().int().nonnegative(),
+  staleEntries: z.number().int().nonnegative(),
+  unmappedChanges: z.number().int().nonnegative(),
+});
+export type KnowledgeUpdateImpactSummary = z.infer<
+  typeof KnowledgeUpdateImpactSummarySchema
+>;
+
+export const KnowledgeUpdateExecutionSchema = z.object({
+  targetEntries: z.number().int().nonnegative(),
+  skippedStaleEntries: z.number().int().nonnegative(),
+  attemptedEntries: z.number().int().nonnegative(),
+  succeededEntries: z.number().int().nonnegative(),
+  failedEntries: z.number().int().nonnegative(),
+  rebuiltKnowledge: z.boolean(),
+  failures: z.array(z.string()),
+});
+export type KnowledgeUpdateExecution = z.infer<typeof KnowledgeUpdateExecutionSchema>;
+
+export const KnowledgeStateAppliedUpdateSchema = z.object({
+  generatedAt: z.string(),
+  from: z.string(),
+  to: z.string(),
+  resolvedFrom: z.string(),
+  resolvedTo: z.string(),
+  reportPath: z.string(),
+});
+export type KnowledgeStateAppliedUpdate = z.infer<
+  typeof KnowledgeStateAppliedUpdateSchema
+>;
+
+export const KnowledgeStateSchema = z.object({
+  schemaVersion: z.literal(KnowledgeSchemaVersion),
+  updatedAt: z.string(),
+  latestReportPath: z.string(),
+  latestMode: z.enum(["dry-run", "apply"]),
+  latestRange: z.object({
+    from: z.string(),
+    to: z.string(),
+    resolvedFrom: z.string(),
+    resolvedTo: z.string(),
+  }),
+  lastAppliedReportPath: z.string().optional(),
+  appliedUpdates: z.array(KnowledgeStateAppliedUpdateSchema),
+});
+export type KnowledgeState = z.infer<typeof KnowledgeStateSchema>;
+
+export const KnowledgeUpdateReportSchema = z.object({
+  schemaVersion: z.literal(KnowledgeSchemaVersion),
+  generatedAt: z.string(),
+  mode: z.enum(["dry-run", "apply"]),
+  repoRoot: z.string(),
+  knowledgeRoot: z.string(),
+  from: z.string(),
+  to: z.string(),
+  resolvedFrom: z.string(),
+  resolvedTo: z.string(),
+  batchSize: z.number().int().positive(),
+  dryRun: z.boolean(),
+  commitCount: z.number().int().nonnegative(),
+  commits: z.array(KnowledgeUpdateCommitSchema),
+  changeCount: z.number().int().nonnegative(),
+  changes: z.array(KnowledgeUpdateFileChangeSchema),
+  changeSummary: KnowledgeUpdateChangeSummarySchema,
+  impactSummary: KnowledgeUpdateImpactSummarySchema,
+  impacts: z.array(KnowledgeUpdateEntryImpactSchema),
+  unmappedChanges: z.array(KnowledgeUpdateFileChangeSchema),
+  execution: KnowledgeUpdateExecutionSchema.optional(),
+  slices: z.array(KnowledgeUpdateSliceSchema),
+  notes: z.array(z.string()),
+});
+export type KnowledgeUpdateReport = z.infer<typeof KnowledgeUpdateReportSchema>;

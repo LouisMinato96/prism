@@ -15,6 +15,7 @@ import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts"
 import {
   resolveKnowledgeAnswerOptions,
   resolveKnowledgeBuildOptions,
+  resolveKnowledgeUpdateOptions,
 } from "./lib/knowledge-options.ts";
 import {
   DEFAULT_MAX_SCOPED_FILES,
@@ -23,6 +24,7 @@ import {
 } from "./stages/analyze/run.ts";
 import { runKnowledgeBuild } from "./stages/knowledge/build.ts";
 import { runKnowledgeAnswer } from "./stages/knowledge/answer.ts";
+import { runKnowledgeUpdate } from "./stages/knowledge/update.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -35,6 +37,7 @@ USAGE:
   prism knowledge build [options]
   prism knowledge answer --question <text> [options]
   prism knowledge answer --questions-file <path> [options]
+  prism knowledge update --from <commit> --to <commit> [options]
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
@@ -52,7 +55,13 @@ OPTIONS:
   --docs-root <path>    Knowledge command: docs root to scan for artifact links (default: docs/prism)
   --out <path>          Knowledge build command: output root (default: .prism/knowledge)
   --knowledge-root <path> Knowledge answer command: knowledge root (default: .prism/knowledge)
+  --repo-root <path>     Knowledge update command: git repo root (default: .)
   --code-root <path>    Knowledge answer command: source code repo root for evidence paths
+  --from <commit>       Knowledge update command: starting commit (exclusive)
+  --to <commit>         Knowledge update command: ending commit (inclusive)
+  --batch-size <n>      Knowledge update command: commit batch size for planning (default: 20)
+  --dry-run             Knowledge update command: planning mode (default when --apply is not set)
+  --apply               Knowledge update command: execute selective refresh + rebuild (disables dry-run)
   --question <text>     Knowledge answer command: single question to answer
   --questions-file <path> Knowledge answer command: JSON file with questions array
   --answer-out <path>   Knowledge answer command: output file for single question
@@ -90,7 +99,13 @@ async function main() {
       "analyze-root": { type: "string" },
       "docs-root": { type: "string" },
       "knowledge-root": { type: "string" },
+      "repo-root": { type: "string" },
       "code-root": { type: "string" },
+      from: { type: "string" },
+      to: { type: "string" },
+      "batch-size": { type: "string" },
+      "dry-run": { type: "boolean" },
+      apply: { type: "boolean", default: false },
       question: { type: "string" },
       "questions-file": { type: "string" },
       "answer-out": { type: "string" },
@@ -202,6 +217,38 @@ async function main() {
         }
         process.exit(1);
       }
+      return;
+    }
+
+    if (subcmd === "update") {
+      let updateOptions: ReturnType<typeof resolveKnowledgeUpdateOptions>;
+      try {
+        updateOptions = resolveKnowledgeUpdateOptions({
+          "repo-root": values["repo-root"] as string | undefined,
+          "knowledge-root": values["knowledge-root"] as string | undefined,
+          from: values.from as string | undefined,
+          to: values.to as string | undefined,
+          "batch-size": values["batch-size"] as string | undefined,
+          "dry-run": values["dry-run"] === true,
+          apply: values.apply === true,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "knowledge:update");
+        process.exit(1);
+      }
+
+      const result = await runKnowledgeUpdate({
+        repoRoot: updateOptions.repoRoot,
+        knowledgeRoot: updateOptions.knowledgeRoot,
+        from: updateOptions.from,
+        to: updateOptions.to,
+        batchSize: updateOptions.batchSize,
+        dryRun: updateOptions.dryRun,
+        force,
+      });
+      log.done(result.reportPath, "update-report");
+      log.done(result.reportMarkdownPath, "update-report-md");
       return;
     }
 

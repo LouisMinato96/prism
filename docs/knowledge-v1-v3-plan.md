@@ -4,6 +4,7 @@ This file is the execution checklist for making `prism knowledge` truly producti
 
 Implementation prep for V1: `docs/knowledge-v1-prep.md`.
 Implementation prep for V2: `docs/knowledge-v2-prep.md`.
+Implementation prep for V3: `docs/knowledge-v3-prep.md`.
 
 ## Outcome Target
 
@@ -204,12 +205,12 @@ Use this checklist while implementing:
 
 ### V3
 
-- [ ] `knowledge update` command added
-- [ ] Commit-range diff ingestion added
-- [ ] Impact mapping rules added
-- [ ] Selective re-analysis + refresh added
-- [ ] Update state/report artifacts added
-- [ ] V3 tests green
+- [x] `knowledge update` command added
+- [x] Commit-range diff ingestion added
+- [x] Impact mapping rules added
+- [x] Selective re-analysis + refresh added
+- [x] Update state/report artifacts added
+- [x] V3 tests green
 
 ---
 
