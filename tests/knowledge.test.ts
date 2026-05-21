@@ -240,6 +240,8 @@ test("knowledge answer auth-flow intent ranking prefers auth services over worke
     expect(serviceIndex).toBeGreaterThan(-1);
     expect(workerIndex).toBeGreaterThan(-1);
     expect(serviceIndex).toBeLessThan(workerIndex);
+    expect(content).toContain("## Missing Artifact Warnings");
+    expect(content).toContain("missing graph artifact");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -302,11 +304,13 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("How app page works");
     expect(content).toContain("- intent:");
     expect(content).toContain("- code root:");
+    expect(content).toContain("- confidence:");
     expect(content).toContain("code_file:");
     expect(content).toContain("flow_signal:");
     expect(content).toContain("diagram_signal:");
     expect(content).toContain("final_excerpt:");
     expect(content).toContain("service_flow_excerpt:");
+    expect(content).toContain("No missing artifacts detected for ranked entries.");
     expect(content).toContain("Auth flow starts at login");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
@@ -500,6 +504,7 @@ async function createKnowledgeFixtureProject(): Promise<string> {
 
   await mkdir(multiRunRoot, { recursive: true });
   await mkdir(docsRoot, { recursive: true });
+  await mkdir(join(baseDir, "src/app"), { recursive: true });
   await mkdir(join(successWorkdir, "scope"), { recursive: true });
   await mkdir(join(successWorkdir, "symbols"), { recursive: true });
   await mkdir(join(successWorkdir, "repo-index"), { recursive: true });
@@ -513,6 +518,10 @@ async function createKnowledgeFixtureProject(): Promise<string> {
   const serviceFlowDiagramFile = join(successWorkdir, "diagrams", "service-flow.md");
   await writeFile(diagramFile, "# Component Tree\n");
   await writeFile(serviceFlowDiagramFile, "# Service Flow\n");
+  await writeFile(
+    join(baseDir, "src/app/page.tsx"),
+    "export default function Page() { return null; }\n",
+  );
   await writeFile(
     join(successWorkdir, "scope", "scope.json"),
     JSON.stringify(

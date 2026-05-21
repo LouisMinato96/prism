@@ -351,6 +351,16 @@ async function renderAnswer(input: {
     analyzeRepoRootAbs: input.analyzeRepoRootAbs,
     queryTokens: query.tokens,
   });
+  const confidence = computeAnswerConfidence(
+    entryMatches,
+    insightMatches,
+    artifactEvidenceByEntry,
+  );
+  const warnings = collectArtifactWarnings(
+    entryMatches,
+    artifactEvidenceByEntry,
+    input.analyzeRepoRootAbs,
+  );
 
   const questionDigest = createHash("sha1")
     .update(input.question)
@@ -371,6 +381,7 @@ async function renderAnswer(input: {
   lines.push(`- code root: \`${input.codeRoot}\``);
   lines.push(`- schema version: ${input.pack.schemaVersion}`);
   lines.push(`- top limit: ${input.top}`);
+  lines.push(`- confidence: ${confidence.level} (${confidence.score}/100)`);
   lines.push("");
   lines.push("## Answer");
   lines.push("");
@@ -431,6 +442,14 @@ async function renderAnswer(input: {
         lines.push(`  - matched tokens: ${match.matchedTokens.join(", ")}`);
       }
     }
+  }
+  lines.push("");
+  lines.push("## Missing Artifact Warnings");
+  lines.push("");
+  if (warnings.length === 0) {
+    lines.push("No missing artifacts detected for ranked entries.");
+  } else {
+    lines.push(...warnings.map((warning) => `- ${warning}`));
   }
   lines.push("");
   lines.push("## Limits");
@@ -868,6 +887,95 @@ function renderDiagramSignal(evidence: EntryArtifactEvidence): string {
 function renderSnippetValue(snippet: string | undefined, fileExists: boolean): string {
   if (snippet) return snippet;
   return fileExists ? "no matching excerpt" : "file missing";
+}
+
+function computeAnswerConfidence(
+  entryMatches: EntryMatch[],
+  insightMatches: InsightMatch[],
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>,
+): { score: number; level: "low" | "medium" | "high" } {
+  if (entryMatches.length === 0) return { score: 15, level: "low" };
+
+  const primaryScore = Math.min(40, entryMatches[0]!.score);
+  const entryCountBoost = Math.min(20, entryMatches.length * 4);
+  const insightBoost = Math.min(10, insightMatches.length * 2);
+
+  let totalChecks = 0;
+  let passedChecks = 0;
+  for (const match of entryMatches) {
+    const artifact =
+      artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+      emptyArtifactEvidence(match.entry.finalIndex);
+    const checks = [
+      match.codeExists,
+      match.graphStats.exists,
+      artifact.finalIndexExists,
+      artifact.serviceFlowExists,
+      artifact.diagramsManifestExists,
+    ];
+    totalChecks += checks.length;
+    passedChecks += checks.filter(Boolean).length;
+  }
+  const artifactCoverage =
+    totalChecks === 0 ? 0 : Math.round((passedChecks / totalChecks) * 30);
+
+  const score = clamp(
+    primaryScore + entryCountBoost + insightBoost + artifactCoverage,
+    0,
+    100,
+  );
+  return {
+    score,
+    level: score >= 75 ? "high" : score >= 45 ? "medium" : "low",
+  };
+}
+
+function collectArtifactWarnings(
+  entryMatches: EntryMatch[],
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>,
+  analyzeRepoRootAbs: string,
+): string[] {
+  const warnings = new Set<string>();
+  for (const match of entryMatches) {
+    const artifact =
+      artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+      emptyArtifactEvidence(match.entry.finalIndex);
+    const label = `${match.run.configDigest}/${match.entry.name}`;
+    if (!match.codeExists) {
+      warnings.add(`${label}: missing code file ${match.entry.path}`);
+    }
+    if (!match.graphStats.exists) {
+      const graphPath = resolvePath(
+        analyzeRepoRootAbs,
+        `${match.entry.workdir}/graph/graph.json`,
+      );
+      warnings.add(`${label}: missing graph artifact ${toPosixPath(graphPath)}`);
+    }
+    if (!artifact.finalIndexExists) {
+      warnings.add(
+        `${label}: missing final index ${toPosixPath(artifact.finalIndexPath)}`,
+      );
+    }
+    if (!artifact.serviceFlowExists) {
+      warnings.add(
+        `${label}: missing service-flow page ${toPosixPath(artifact.serviceFlowPath)}`,
+      );
+    }
+    if (!artifact.diagramsManifestExists) {
+      warnings.add(
+        `${label}: missing diagrams manifest ${toPosixPath(artifact.diagramsManifestPath)}`,
+      );
+    }
+  }
+  return [...warnings].sort((a, b) => a.localeCompare(b));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function toPosixPath(path: string): string {
+  return path.split("\\").join("/");
 }
 
 function emptyArtifactEvidence(finalIndexPath: string): EntryArtifactEvidence {
