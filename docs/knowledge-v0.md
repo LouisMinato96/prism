@@ -78,6 +78,7 @@ prism knowledge build \
 - malformed artifacts
 - docs missing artifact links
 - duplicate or stale-looking run signals
+- contradiction signals (when detectable from artifact conflicts)
 
 ## Deterministic Answers
 
@@ -118,14 +119,61 @@ Answer files are Markdown and include:
 
 - grounded summary text
 - deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
+- deterministic section renderer (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`)
 - evidence entries with artifact links (`final/index.md`, `final/analysis.md`, `final/pages/08-service-flow.md`)
 - code-file paths resolved against code root with `exists`/`missing` status
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
 - repo-index evidence signals (`repo_signal`) for deterministic intent-aware ranking
 - compact deterministic excerpts from final artifact pages
 - deduped matched insights with grouped occurrences/evidence counts
+- stale/contradiction evidence signals from `artifacts-index.json`
 - deterministic limits and gaps notes
 - optional JSON sidecar output when `--emit-json` is enabled
+
+Answer JSON contract:
+
+- See [`docs/knowledge-answer-schema.md`](./knowledge-answer-schema.md) for the stable machine-readable answer schema and strict diagnostics fields.
+
+## Strict Mode Operations
+
+Strict mode is deterministic and CI-friendly:
+
+- answer artifacts are written first
+- strict checks are evaluated after write
+- process exits non-zero when any strict issue exists
+
+Strict categories include:
+
+- `confidence_below_min`
+- `missing_code_file`
+- `missing_graph`
+- `missing_repo_index`
+- `missing_final_index`
+- `missing_service_flow_page`
+
+CLI stderr markers (parse-friendly):
+
+- `STRICT_SUMMARY question_count=<n> failed_question_count=<n> issue_count=<n> min_confidence=<level>`
+- `STRICT_CATEGORY category=<name> count=<n>`
+- `STRICT_FAILURE question_digest=<digest> category=<name> detail=<text>`
+
+Batch mode (`--questions-file`) also writes deterministic strict summary and strict issue rows in `answers/index.md`.
+
+## Troubleshooting
+
+If answers are weak or strict fails often:
+
+1. Re-run analyze for missing/partial entries and rebuild knowledge:
+   - `prism analyze ... --force`
+   - `prism knowledge build --force`
+2. Inspect `validation-report.md`:
+   - `Missing Expected Files`
+   - `Malformed Artifacts`
+   - `Duplicate Or Stale-Looking Runs`
+   - `Contradiction Signals`
+3. Verify `--code-root` points to the same repo analyzed by `--analyze-root`.
+4. Use `--emit-json` for deterministic downstream checks.
+5. Start with `--min-confidence medium` before tightening to `high` in CI.
 
 Cross-repo usage example (run from Prism repo):
 

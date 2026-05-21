@@ -172,6 +172,12 @@ export const ArtifactLinkSchema = z.object({
 });
 export type ArtifactLink = z.infer<typeof ArtifactLinkSchema>;
 
+export const ArtifactIntegritySignalsSchema = z.object({
+  staleRunSignals: z.array(z.string()),
+  contradictionSignals: z.array(z.string()),
+});
+export type ArtifactIntegritySignals = z.infer<typeof ArtifactIntegritySignalsSchema>;
+
 export const ArtifactsIndexSchema = z.object({
   schemaVersion: z.literal(KnowledgeSchemaVersion),
   generatedAt: z.string(),
@@ -183,6 +189,7 @@ export const ArtifactsIndexSchema = z.object({
   discoveredEntryWorkdirs: z.array(z.string()),
   orphanEntryWorkdirs: z.array(z.string()),
   docsArtifactLinks: z.array(ArtifactLinkSchema),
+  integritySignals: ArtifactIntegritySignalsSchema.optional(),
 });
 export type ArtifactsIndex = z.infer<typeof ArtifactsIndexSchema>;
 

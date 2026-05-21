@@ -438,14 +438,25 @@ Answers include:
 
 - grounded summary text
 - deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
+- deterministic section blocks (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`)
 - top matched entries with `start_here` and `detail` links
 - code-file paths resolved against the selected code root (`exists`/`missing`)
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
 - repo-index evidence signals (`repo_signal`) used for deterministic ranking boosts
 - compact artifact excerpts from `final/index.md` and `final/pages/08-service-flow.md`
 - deduped matched insights with grouped occurrence counts
+- staleness and contradiction signals loaded from `artifacts-index.json`
 - deterministic limits and evidence notes
 - optional machine-readable JSON sidecars with `--emit-json`
+
+Strict mode CI behavior:
+
+- writes answer files first, then exits non-zero on strict failure
+- emits parse-friendly strict diagnostics in stderr:
+  - `STRICT_SUMMARY ...`
+  - `STRICT_CATEGORY ...`
+  - `STRICT_FAILURE ...`
+- batch answers write `index.md` with deterministic strict summary and per-question strict issue rows
 
 If your analyze/docs/knowledge roots are in a different repository, run Prism from this repo and pass absolute roots. Example:
 
@@ -532,5 +543,6 @@ bun test
 - [`docs/analyze-v1.md`](docs/analyze-v1.md): multi-entry orchestration contract.
 - [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): current static-analysis roadmap/status.
 - [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
+- [`docs/knowledge-answer-schema.md`](docs/knowledge-answer-schema.md): deterministic answer JSON contract and strict diagnostics format.
 - [`docs/knowledge-v2-prep.md`](docs/knowledge-v2-prep.md): V2 implementation-ready hardening plan.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.

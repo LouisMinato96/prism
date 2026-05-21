@@ -144,6 +144,8 @@ export interface KnowledgeAnswerResult {
     minConfidence: "low" | "medium" | "high";
     failed: boolean;
     failures: string[];
+    issues: StrictIssueRecord[];
+    summary: StrictSummary;
   };
 }
 
@@ -204,6 +206,11 @@ interface KnowledgeAnswerJson {
     matchedTokens: string[];
   }>;
   warnings: string[];
+  integritySignals: {
+    staleRunSignals: string[];
+    contradictionSignals: string[];
+    relevantSignals: string[];
+  };
   limits: string[];
 }
 
@@ -276,12 +283,55 @@ interface EntryArtifactEvidence {
 
 interface StrictEvaluation {
   question: string;
+  questionDigest: string;
   confidence: {
     level: "low" | "medium" | "high";
     score: number;
   };
-  missingCriticalArtifacts: string[];
+  missingCriticalArtifacts: StrictArtifactGap[];
 }
+
+type StrictFailureCategory =
+  | "confidence_below_min"
+  | "missing_code_file"
+  | "missing_graph"
+  | "missing_repo_index"
+  | "missing_final_index"
+  | "missing_service_flow_page";
+
+interface StrictArtifactGap {
+  category: Exclude<StrictFailureCategory, "confidence_below_min">;
+  detail: string;
+}
+
+export interface StrictIssueRecord {
+  question: string;
+  questionDigest: string;
+  category: StrictFailureCategory;
+  detail: string;
+}
+
+export interface StrictSummary {
+  questionCount: number;
+  failedQuestionCount: number;
+  issueCount: number;
+  categories: Array<{ category: StrictFailureCategory; count: number }>;
+}
+
+interface BatchAnswerRecord {
+  question: string;
+  questionDigest: string;
+  confidence: {
+    level: "low" | "medium" | "high";
+    score: number;
+  };
+  outputPath: string;
+  jsonOutputPath?: string;
+  strictIssues: StrictIssueRecord[];
+}
+
+const SECTION_ENTRY_LIMIT = 5;
+const EVIDENCE_MAP_LIMIT = 8;
 
 export async function runKnowledgeAnswer(
   options: KnowledgeAnswerOptions,
@@ -323,6 +373,7 @@ export async function runKnowledgeAnswer(
     question: options.question,
     questionsFile: options.questionsFile,
   });
+  const generatedAt = await resolveGeneratedAt([loaded.packPath, loaded.indexPath]);
 
   log.step(
     `answering ${questions.length} question(s) from ${toDisplayPath(baseDir, knowledgeRootAbs)}`,
@@ -336,6 +387,7 @@ export async function runKnowledgeAnswer(
     jsonOutputPath?: string;
   }> = [];
   const strictEvaluations: StrictEvaluation[] = [];
+  const batchAnswers: BatchAnswerRecord[] = [];
 
   for (const [index, question] of questions.entries()) {
     const outputAbs =
@@ -347,7 +399,7 @@ export async function runKnowledgeAnswer(
       question,
       knowledgeRoot: toDisplayPath(baseDir, knowledgeRootAbs),
       codeRoot: toDisplayPath(baseDir, codeRootAbs),
-      generatedAt: await resolveGeneratedAt([loaded.packPath, loaded.indexPath]),
+      generatedAt,
       top,
       pack: loaded.pack,
       index: loaded.index,
@@ -372,31 +424,105 @@ export async function runKnowledgeAnswer(
       jsonOutputPath,
     });
     strictEvaluations.push(rendered.strictEvaluation);
+    batchAnswers.push({
+      question,
+      questionDigest: rendered.json.questionDigest,
+      confidence: rendered.json.confidence,
+      outputPath: outputAbs,
+      jsonOutputPath,
+      strictIssues: strict
+        ? evaluateStrictIssues(rendered.strictEvaluation, minConfidence)
+        : [],
+    });
     usedOutputNames.add(outputAbs);
   }
 
   let indexPath: string | undefined;
   if (questions.length > 1) {
     const batchIndexAbs = join(outDirAbs, "index.md");
+    const strictIssueCount = batchAnswers.reduce(
+      (count, answer) => count + answer.strictIssues.length,
+      0,
+    );
+    const strictFailCount = batchAnswers.filter(
+      (answer) => answer.strictIssues.length > 0,
+    ).length;
     const lines = [
       "# Prism Knowledge Answers",
       "",
+      `- generated at: ${generatedAt}`,
       `- knowledge root: \`${toDisplayPath(baseDir, knowledgeRootAbs)}\``,
+      `- question count: ${questions.length}`,
       `- answer count: ${answers.length}`,
+      `- strict mode: ${strict ? `enabled (min=${minConfidence})` : "disabled"}`,
+      `- strict fail count: ${strict ? strictFailCount : 0}`,
+      `- strict issue count: ${strict ? strictIssueCount : 0}`,
       "",
+      "## Answers",
+      "",
+      "| # | digest | confidence | strict | markdown | json | question |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
     ];
-    for (const answer of answers) {
+    for (const [index, answer] of batchAnswers.entries()) {
+      const strictCell = strict
+        ? answer.strictIssues.length === 0
+          ? "pass"
+          : `fail(${answer.strictIssues.length})`
+        : "n/a";
+      const jsonCell = answer.jsonOutputPath
+        ? `\`${toDisplayPath(baseDir, answer.jsonOutputPath)}\``
+        : "-";
       lines.push(
-        `- ${answer.question}: \`${toDisplayPath(baseDir, answer.outputPath)}\``,
+        `| ${index + 1} | ${answer.questionDigest} | ${answer.confidence.level} (${answer.confidence.score}/100) | ${strictCell} | \`${toDisplayPath(baseDir, answer.outputPath)}\` | ${jsonCell} | ${escapeTableCell(answer.question)} |`,
       );
+    }
+    if (strict) {
+      lines.push("");
+      lines.push("## Strict Summary");
+      lines.push("");
+      const strictSummary = buildStrictSummary(strictEvaluations, minConfidence);
+      lines.push(`- question count: ${strictSummary.questionCount}`);
+      lines.push(`- failed question count: ${strictSummary.failedQuestionCount}`);
+      lines.push(`- issue count: ${strictSummary.issueCount}`);
+      lines.push("");
+      lines.push("| category | count |");
+      lines.push("| --- | --- |");
+      for (const category of strictSummary.categories) {
+        lines.push(`| ${category.category} | ${category.count} |`);
+      }
+      lines.push("");
+      lines.push("## Strict Issues");
+      lines.push("");
+      if (strictIssueCount === 0) {
+        lines.push("None.");
+      } else {
+        for (const answer of batchAnswers) {
+          if (answer.strictIssues.length === 0) continue;
+          for (const issue of answer.strictIssues) {
+            lines.push(
+              `- [${answer.questionDigest}] code=${issue.category} detail=${issue.detail}`,
+            );
+          }
+        }
+      }
     }
     lines.push("");
     await writeTextIfChanged(batchIndexAbs, lines.join("\n"), force);
     indexPath = batchIndexAbs;
   }
 
-  const strictFailures =
+  const strictIssues =
     strict === true ? evaluateStrictFailures(strictEvaluations, minConfidence) : [];
+  const strictFailures = strictIssues.map((issue) => formatStrictIssue(issue));
+  const strictSummary =
+    strict === true
+      ? buildStrictSummary(strictEvaluations, minConfidence)
+      : {
+          questionCount: strictEvaluations.length,
+          failedQuestionCount: 0,
+          issueCount: 0,
+          categories: [],
+        };
 
   return {
     knowledgeRoot: knowledgeRootAbs,
@@ -408,6 +534,8 @@ export async function runKnowledgeAnswer(
       minConfidence,
       failed: strictFailures.length > 0,
       failures: strictFailures,
+      issues: strictIssues,
+      summary: strictSummary,
     },
   };
 }
@@ -497,6 +625,13 @@ async function renderAnswer(input: {
     artifactEvidenceByEntry,
     input.analyzeRepoRootAbs,
   );
+  const staleRunSignals = input.index.integritySignals?.staleRunSignals ?? [];
+  const contradictionSignals = input.index.integritySignals?.contradictionSignals ?? [];
+  const relevantSignals = selectRelevantIntegritySignals(
+    entryMatches,
+    staleRunSignals,
+    contradictionSignals,
+  );
 
   const questionDigest = createHash("sha1")
     .update(input.question)
@@ -533,6 +668,63 @@ async function renderAnswer(input: {
   lines.push("## Answer");
   lines.push("");
   lines.push(summary);
+  lines.push("");
+  lines.push("## Auth Flow");
+  lines.push("");
+  lines.push(
+    ...renderSectionEntries({
+      entries: selectSectionEntries(entryMatches, isAuthFlowEntry, SECTION_ENTRY_LIMIT),
+      emptyMessage: "No auth flow evidence found in ranked entries.",
+      artifactEvidenceByEntry,
+    }),
+  );
+  lines.push("");
+  lines.push("## Guards & Permissions");
+  lines.push("");
+  lines.push(
+    ...renderSectionEntries({
+      entries: selectSectionEntries(entryMatches, isPermissionEntry, SECTION_ENTRY_LIMIT),
+      emptyMessage: "No guard or permission evidence found in ranked entries.",
+      artifactEvidenceByEntry,
+    }),
+  );
+  lines.push("");
+  lines.push("## Failure Paths");
+  lines.push("");
+  lines.push(
+    ...renderSectionEntries({
+      entries: selectSectionEntries(entryMatches, isFailureEntry, SECTION_ENTRY_LIMIT),
+      emptyMessage: "No failure-focused entries found in ranked evidence.",
+      artifactEvidenceByEntry,
+    }),
+  );
+  const failureInsights = insightMatches
+    .filter((match) => isFailureInsight(match.insight))
+    .slice(0, 3);
+  if (failureInsights.length > 0) {
+    lines.push("");
+    lines.push("Failure-related insights:");
+    for (const insight of failureInsights) {
+      lines.push(
+        `- ${insight.insight.entry} | ${insight.insight.severity} | ${insight.insight.title} | occurrences=${insight.occurrences} | evidence=${insight.aggregatedEvidenceCount}`,
+      );
+    }
+  }
+  lines.push("");
+  lines.push("## Evidence Map");
+  lines.push("");
+  const evidenceMapRows = entryMatches.slice(0, EVIDENCE_MAP_LIMIT);
+  if (evidenceMapRows.length === 0) {
+    lines.push("No entries available for evidence map.");
+  } else {
+    lines.push("| rank | run | entry | status | path | start_here | detail |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+    for (const [index, match] of evidenceMapRows.entries()) {
+      lines.push(
+        `| ${index + 1} | ${match.run.configDigest} | ${match.entry.name} | ${match.entry.status} | ${match.entry.path} | \`${match.entry.finalIndex}\` | \`${match.entry.finalReport}\` |`,
+      );
+    }
+  }
   lines.push("");
   lines.push("## Evidence Entries");
   lines.push("");
@@ -596,6 +788,17 @@ async function renderAnswer(input: {
     lines.push("No missing artifacts detected for ranked entries.");
   } else {
     lines.push(...warnings.map((warning) => `- ${warning}`));
+  }
+  lines.push("");
+  lines.push("## Staleness & Contradiction Signals");
+  lines.push("");
+  lines.push(
+    `- stale signals: ${staleRunSignals.length}, contradiction signals: ${contradictionSignals.length}, relevant signals: ${relevantSignals.length}`,
+  );
+  if (relevantSignals.length === 0) {
+    lines.push("No relevant stale/contradiction signals for ranked entries.");
+  } else {
+    lines.push(...relevantSignals.map((signal) => `- ${signal}`));
   }
   lines.push("");
   lines.push("## Limits");
@@ -668,6 +871,11 @@ async function renderAnswer(input: {
       matchedTokens: match.matchedTokens,
     })),
     warnings,
+    integritySignals: {
+      staleRunSignals,
+      contradictionSignals,
+      relevantSignals,
+    },
     limits,
   };
 
@@ -676,6 +884,7 @@ async function renderAnswer(input: {
     json,
     strictEvaluation: {
       question: input.question,
+      questionDigest,
       confidence,
       missingCriticalArtifacts: collectCriticalArtifactGaps(
         entryMatches,
@@ -709,6 +918,112 @@ function buildSummaryParagraph(
           .join("; ")}.`
       : "";
   return `Primary evidence points to "${primary.entry.name}" (${primary.entry.path}) as the closest match for "${question}".${relatedText}${insightText}`;
+}
+
+function selectSectionEntries(
+  entries: EntryMatch[],
+  predicate: (entry: EntryMatch) => boolean,
+  limit: number,
+): EntryMatch[] {
+  const selected: EntryMatch[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!predicate(entry)) continue;
+    const key = `${entry.run.configDigest}:${entry.entry.path}`;
+    if (seen.has(key)) continue;
+    selected.push(entry);
+    seen.add(key);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+function renderSectionEntries(input: {
+  entries: EntryMatch[];
+  emptyMessage: string;
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>;
+}): string[] {
+  if (input.entries.length === 0) return [input.emptyMessage];
+  const lines: string[] = [];
+  for (const match of input.entries) {
+    const artifact =
+      input.artifactEvidenceByEntry.get(
+        entryRunKey(match.run.configDigest, match.entry),
+      ) ?? emptyArtifactEvidence(match.entry.finalIndex);
+    lines.push(
+      `- ${match.entry.name} | ${match.entry.path} | score=${match.score} | status=${match.entry.status}`,
+    );
+    lines.push(
+      `  - run=${match.run.configDigest}, service_calls=${match.graphStats.serviceCalls}, context_edges=${match.graphStats.contextEdges}, auth_hints=${match.repoIndexSignals.authHints}, permission_hints=${match.repoIndexSignals.permissionHints}, debug_hints=${match.repoIndexSignals.debugHints}`,
+    );
+    lines.push(
+      `  - refs: start_here=\`${match.entry.finalIndex}\`, detail=\`${match.entry.finalReport}\`, service_flow=\`${deriveServiceFlowPath(match.entry.finalIndex)}\`, final_excerpt=${renderSnippetValue(artifact.finalIndexSnippet, artifact.finalIndexExists)}`,
+    );
+  }
+  return lines;
+}
+
+function isAuthFlowEntry(match: EntryMatch): boolean {
+  const haystack = normalizeText(`${match.entry.name} ${match.entry.path}`);
+  return (
+    containsAny(haystack, INTENT_KEYWORDS["auth-flow"]) ||
+    match.repoIndexSignals.authHints > 0
+  );
+}
+
+function isPermissionEntry(match: EntryMatch): boolean {
+  const haystack = normalizeText(`${match.entry.name} ${match.entry.path}`);
+  return (
+    containsAny(haystack, INTENT_KEYWORDS.permissions) ||
+    match.repoIndexSignals.permissionHints > 0 ||
+    match.graphStats.contextEdges > 0
+  );
+}
+
+function isFailureEntry(match: EntryMatch): boolean {
+  const haystack = normalizeText(`${match.entry.name} ${match.entry.path}`);
+  return (
+    match.entry.status === "failed" ||
+    containsAny(haystack, INTENT_KEYWORDS["failure-debug"]) ||
+    match.repoIndexSignals.debugHints > 0
+  );
+}
+
+function isFailureInsight(insight: KnowledgeInsightSummary): boolean {
+  const haystack = normalizeText(
+    `${insight.title} ${insight.lens} ${insight.entry} ${insight.severity}`,
+  );
+  return (
+    containsAny(haystack, INTENT_KEYWORDS["failure-debug"]) || insight.severity === "high"
+  );
+}
+
+function selectRelevantIntegritySignals(
+  entries: EntryMatch[],
+  staleRunSignals: string[],
+  contradictionSignals: string[],
+): string[] {
+  const all = [...staleRunSignals, ...contradictionSignals].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (all.length === 0) return [];
+
+  const needles = new Set<string>();
+  for (const entry of entries) {
+    needles.add(normalizeText(entry.entry.name));
+    needles.add(normalizeText(entry.entry.path));
+    needles.add(normalizeText(entry.run.configDigest));
+  }
+  const normalizedNeedles = [...needles].filter((value) => value.length > 0);
+
+  const matched = all.filter((signal) => {
+    const normalized = normalizeText(signal);
+    return normalizedNeedles.some(
+      (needle) => needle.length > 0 && normalized.includes(needle),
+    );
+  });
+  if (matched.length > 0) return matched.slice(0, 12);
+  return all.slice(0, 6);
 }
 
 function rankEntryMatches(
@@ -1352,39 +1667,110 @@ function computeAnswerConfidence(
 function collectCriticalArtifactGaps(
   entryMatches: EntryMatch[],
   artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>,
-): string[] {
-  const gaps = new Set<string>();
+): StrictArtifactGap[] {
+  const gaps = new Map<string, StrictArtifactGap>();
   for (const match of entryMatches) {
     const artifact =
       artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
       emptyArtifactEvidence(match.entry.finalIndex);
     const label = `${match.run.configDigest}/${match.entry.name}`;
-    if (!match.codeExists) gaps.add(`${label}: missing code file`);
-    if (!match.graphStats.exists) gaps.add(`${label}: missing graph`);
-    if (!match.repoIndexSignals.exists) gaps.add(`${label}: missing repo-index`);
-    if (!artifact.finalIndexExists) gaps.add(`${label}: missing final index`);
-    if (!artifact.serviceFlowExists) gaps.add(`${label}: missing service-flow page`);
+    if (!match.codeExists) {
+      const gap: StrictArtifactGap = {
+        category: "missing_code_file",
+        detail: `${label}: missing code file`,
+      };
+      gaps.set(`${gap.category}:${gap.detail}`, gap);
+    }
+    if (!match.graphStats.exists) {
+      const gap: StrictArtifactGap = {
+        category: "missing_graph",
+        detail: `${label}: missing graph`,
+      };
+      gaps.set(`${gap.category}:${gap.detail}`, gap);
+    }
+    if (!match.repoIndexSignals.exists) {
+      const gap: StrictArtifactGap = {
+        category: "missing_repo_index",
+        detail: `${label}: missing repo-index`,
+      };
+      gaps.set(`${gap.category}:${gap.detail}`, gap);
+    }
+    if (!artifact.finalIndexExists) {
+      const gap: StrictArtifactGap = {
+        category: "missing_final_index",
+        detail: `${label}: missing final index`,
+      };
+      gaps.set(`${gap.category}:${gap.detail}`, gap);
+    }
+    if (!artifact.serviceFlowExists) {
+      const gap: StrictArtifactGap = {
+        category: "missing_service_flow_page",
+        detail: `${label}: missing service-flow page`,
+      };
+      gaps.set(`${gap.category}:${gap.detail}`, gap);
+    }
   }
-  return [...gaps].sort((a, b) => a.localeCompare(b));
+  return [...gaps.values()].sort(
+    (a, b) => a.category.localeCompare(b.category) || a.detail.localeCompare(b.detail),
+  );
 }
 
 function evaluateStrictFailures(
   evaluations: StrictEvaluation[],
   minConfidence: "low" | "medium" | "high",
-): string[] {
-  const failures: string[] = [];
+): StrictIssueRecord[] {
+  return evaluations.flatMap((evaluation) =>
+    evaluateStrictIssues(evaluation, minConfidence),
+  );
+}
+
+function evaluateStrictIssues(
+  evaluation: StrictEvaluation,
+  minConfidence: "low" | "medium" | "high",
+): StrictIssueRecord[] {
+  const issues: StrictIssueRecord[] = [];
   const minRank = confidenceRank(minConfidence);
-  for (const evaluation of evaluations) {
-    if (confidenceRank(evaluation.confidence.level) < minRank) {
-      failures.push(
-        `${evaluation.question}: confidence ${evaluation.confidence.level} (${evaluation.confidence.score}/100) below required ${minConfidence}`,
-      );
-    }
-    for (const gap of evaluation.missingCriticalArtifacts) {
-      failures.push(`${evaluation.question}: ${gap}`);
-    }
+  if (confidenceRank(evaluation.confidence.level) < minRank) {
+    issues.push({
+      question: evaluation.question,
+      questionDigest: evaluation.questionDigest,
+      category: "confidence_below_min",
+      detail: `confidence ${evaluation.confidence.level} (${evaluation.confidence.score}/100) below required ${minConfidence}`,
+    });
   }
-  return failures;
+  for (const gap of evaluation.missingCriticalArtifacts) {
+    issues.push({
+      question: evaluation.question,
+      questionDigest: evaluation.questionDigest,
+      category: gap.category,
+      detail: gap.detail,
+    });
+  }
+  return issues;
+}
+
+function buildStrictSummary(
+  evaluations: StrictEvaluation[],
+  minConfidence: "low" | "medium" | "high",
+): StrictSummary {
+  const issues = evaluateStrictFailures(evaluations, minConfidence);
+  const byQuestion = new Set(issues.map((issue) => issue.questionDigest));
+  const byCategory = new Map<StrictFailureCategory, number>();
+  for (const issue of issues) {
+    byCategory.set(issue.category, (byCategory.get(issue.category) ?? 0) + 1);
+  }
+  return {
+    questionCount: evaluations.length,
+    failedQuestionCount: byQuestion.size,
+    issueCount: issues.length,
+    categories: [...byCategory.entries()]
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => a.category.localeCompare(b.category) || b.count - a.count),
+  };
+}
+
+function formatStrictIssue(issue: StrictIssueRecord): string {
+  return `[${issue.category}] ${issue.question}: ${issue.detail}`;
 }
 
 function confidenceRank(level: "low" | "medium" | "high"): number {
@@ -1443,6 +1829,10 @@ function clamp(value: number, min: number, max: number): number {
 
 function toPosixPath(path: string): string {
   return path.split("\\").join("/");
+}
+
+function escapeTableCell(value: string): string {
+  return value.replaceAll("|", "\\|").replace(/\r?\n/g, " ").trim();
 }
 
 function emptyArtifactEvidence(finalIndexPath: string): EntryArtifactEvidence {

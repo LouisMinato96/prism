@@ -176,10 +176,27 @@ async function main() {
         log.done(result.indexPath, "answers-index");
       }
       if (result.strict.failed) {
+        const summary = result.strict.summary;
         log.error(
           `strict mode failed with ${result.strict.failures.length} issue(s); minimum confidence: ${result.strict.minConfidence}`,
           "knowledge:strict",
         );
+        log.error(
+          `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${result.strict.minConfidence}`,
+          "knowledge:strict",
+        );
+        for (const category of summary.categories) {
+          log.error(
+            `STRICT_CATEGORY category=${category.category} count=${category.count}`,
+            "knowledge:strict",
+          );
+        }
+        for (const issue of result.strict.issues) {
+          log.error(
+            `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
+            "knowledge:strict",
+          );
+        }
         for (const failure of result.strict.failures) {
           log.error(failure, "knowledge:strict");
         }

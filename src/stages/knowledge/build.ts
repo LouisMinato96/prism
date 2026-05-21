@@ -69,6 +69,7 @@ export interface KnowledgeValidation {
   malformedArtifacts: string[];
   docsMissingArtifactLinks: string[];
   duplicateOrStaleRuns: string[];
+  contradictionSignals: string[];
 }
 
 interface LoadedMultiRun {
@@ -110,6 +111,7 @@ export async function runKnowledgeBuild(
     malformedArtifacts: [],
     docsMissingArtifactLinks: [],
     duplicateOrStaleRuns: [],
+    contradictionSignals: [],
   };
 
   const [multiRunRoots, entryWorkdirs] = await Promise.all([
@@ -182,6 +184,10 @@ export async function runKnowledgeBuild(
   const insightSummaries = loadedRuns
     .flatMap((run) => run.insights)
     .sort((a, b) => knowledgeInsightSortKey(a).localeCompare(knowledgeInsightSortKey(b)));
+  validation.contradictionSignals.push(
+    ...detectEntryStatusContradictions(entrySummaries),
+    ...detectInsightSeverityContradictions(insightSummaries),
+  );
   const docSummaries = docsScan.docs.sort((a, b) => a.path.localeCompare(b.path));
   const docsArtifactLinks = docsScan.links.sort((a, b) =>
     artifactLinkSortKey(a).localeCompare(artifactLinkSortKey(b)),
@@ -232,6 +238,14 @@ export async function runKnowledgeBuild(
     discoveredEntryWorkdirs: entryWorkdirs,
     orphanEntryWorkdirs,
     docsArtifactLinks,
+    integritySignals: {
+      staleRunSignals: validation.duplicateOrStaleRuns
+        .slice()
+        .sort((a, b) => a.localeCompare(b)),
+      contradictionSignals: validation.contradictionSignals
+        .slice()
+        .sort((a, b) => a.localeCompare(b)),
+    },
   });
 
   const validationReport = renderValidationReport(validation, {
@@ -813,7 +827,67 @@ function renderValidationReport(
       validation.duplicateOrStaleRuns,
     ),
   );
+  lines.push(
+    ...renderValidationSection("Contradiction Signals", validation.contradictionSignals),
+  );
   return `${lines.join("\n")}\n`;
+}
+
+function detectEntryStatusContradictions(entries: KnowledgeEntrySummary[]): string[] {
+  const statusByPath = new Map<string, Set<string>>();
+  const runsByPath = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const statuses = statusByPath.get(entry.path) ?? new Set<string>();
+    statuses.add(entry.status);
+    statusByPath.set(entry.path, statuses);
+
+    const runs = runsByPath.get(entry.path) ?? new Set<string>();
+    runs.add(entry.runDigest);
+    runsByPath.set(entry.path, runs);
+  }
+
+  const contradictions: string[] = [];
+  for (const [path, statuses] of statusByPath) {
+    if (statuses.size < 2) continue;
+    contradictions.push(
+      `entry status conflict for ${path}: statuses=${[...statuses].sort().join(", ")} across runs=${[
+        ...(runsByPath.get(path) ?? new Set<string>()),
+      ]
+        .sort()
+        .join(", ")}`,
+    );
+  }
+  return contradictions.sort((a, b) => a.localeCompare(b));
+}
+
+function detectInsightSeverityContradictions(
+  insights: KnowledgeInsightSummary[],
+): string[] {
+  const bucket = new Map<string, { severities: Set<string>; runs: Set<string> }>();
+  for (const insight of insights) {
+    const key = `${insight.entry}|${insight.lens}|${insight.title}`;
+    const current = bucket.get(key) ?? {
+      severities: new Set<string>(),
+      runs: new Set<string>(),
+    };
+    current.severities.add(insight.severity);
+    current.runs.add(insight.runDigest);
+    bucket.set(key, current);
+  }
+
+  const contradictions: string[] = [];
+  for (const [key, value] of bucket) {
+    if (value.severities.size < 2) continue;
+    const [entry, lens, title] = key.split("|");
+    contradictions.push(
+      `insight severity conflict for ${entry} (${lens}/${title}): severities=${[
+        ...value.severities,
+      ]
+        .sort()
+        .join(", ")} across runs=${[...value.runs].sort().join(", ")}`,
+    );
+  }
+  return contradictions.sort((a, b) => a.localeCompare(b));
 }
 
 function renderValidationSection(title: string, items: string[]): string[] {

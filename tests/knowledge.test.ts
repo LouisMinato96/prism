@@ -88,6 +88,36 @@ test("knowledge build emits pack, index, and validation report with success and 
   }
 });
 
+test("knowledge build records deterministic contradiction signals across runs", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await appendConflictingMultiRunForAppPage(baseDir);
+    const result = await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    expect(result.validation.contradictionSignals.length).toBeGreaterThan(0);
+    expect(result.validation.contradictionSignals).toContainEqual(
+      expect.stringContaining("entry status conflict for src/app/page.tsx"),
+    );
+    expect(result.validation.contradictionSignals).toContainEqual(
+      expect.stringContaining("insight severity conflict for app-page"),
+    );
+    expect(result.artifactsIndex.integritySignals?.contradictionSignals.length).toBeGreaterThan(
+      0,
+    );
+    const validationReport = await readFile(result.validationReportPath, "utf8");
+    expect(validationReport).toContain("## Contradiction Signals");
+    expect(validationReport).toContain("entry status conflict for src/app/page.tsx");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge build skips unchanged outputs unless forced", async () => {
   const baseDir = await createKnowledgeFixtureProject();
   try {
@@ -258,6 +288,10 @@ test("knowledge answer auth-flow intent ranking prefers auth services over worke
     expect(serviceIndex).toBeGreaterThan(-1);
     expect(workerIndex).toBeGreaterThan(-1);
     expect(serviceIndex).toBeLessThan(workerIndex);
+    expect(content).toContain("## Auth Flow");
+    expect(content).toContain("## Guards & Permissions");
+    expect(content).toContain("## Failure Paths");
+    expect(content).toContain("## Evidence Map");
     expect(content).toContain("## Missing Artifact Warnings");
     expect(content).toContain("missing graph artifact");
   } finally {
@@ -352,6 +386,11 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("service_flow_excerpt:");
     expect(content).toContain("No missing artifacts detected for ranked entries.");
     expect(content).toContain("Auth flow starts at login");
+    expect(content).toContain("## Auth Flow");
+    expect(content).toContain("## Guards & Permissions");
+    expect(content).toContain("## Failure Paths");
+    expect(content).toContain("## Evidence Map");
+    expect(content).toContain("| rank | run | entry | status | path | start_here | detail |");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
   } finally {
@@ -389,6 +428,11 @@ test("knowledge answer emits deterministic json when requested", async () => {
       entries: unknown[];
       confidence: { level: string; score: number };
       warnings: string[];
+      integritySignals: {
+        staleRunSignals: string[];
+        contradictionSignals: string[];
+        relevantSignals: string[];
+      };
     };
     expect(json.schemaVersion).toBe(1);
     expect(json.intent).toBe("general");
@@ -397,6 +441,49 @@ test("knowledge answer emits deterministic json when requested", async () => {
     expect(json.confidence.level.length).toBeGreaterThan(0);
     expect(Number.isInteger(json.confidence.score)).toBe(true);
     expect(Array.isArray(json.warnings)).toBe(true);
+    expect(Array.isArray(json.integritySignals.staleRunSignals)).toBe(true);
+    expect(Array.isArray(json.integritySignals.contradictionSignals)).toBe(true);
+    expect(Array.isArray(json.integritySignals.relevantSignals)).toBe(true);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer surfaces stale and contradiction signals from artifacts index", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await appendConflictingMultiRunForAppPage(baseDir);
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      emitJson: true,
+      top: 8,
+      force: true,
+    });
+
+    const content = await readFile(result.answers[0]!.outputPath, "utf8");
+    expect(content).toContain("## Staleness & Contradiction Signals");
+    expect(content).toContain("entry status conflict for src/app/page.tsx");
+    const json = JSON.parse(await readFile(result.answers[0]!.jsonOutputPath!, "utf8")) as {
+      integritySignals: {
+        contradictionSignals: string[];
+        relevantSignals: string[];
+      };
+    };
+    expect(json.integritySignals.contradictionSignals).toContainEqual(
+      expect.stringContaining("entry status conflict for src/app/page.tsx"),
+    );
+    expect(json.integritySignals.relevantSignals.length).toBeGreaterThan(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -421,6 +508,10 @@ test("knowledge answer strict mode reports failures after writing outputs", asyn
     expect(result.strict.enabled).toBe(true);
     expect(result.strict.failed).toBe(true);
     expect(result.strict.failures.length).toBeGreaterThan(0);
+    expect(result.strict.issues.length).toBeGreaterThan(0);
+    expect(result.strict.summary.issueCount).toBeGreaterThan(0);
+    expect(result.strict.summary.failedQuestionCount).toBeGreaterThan(0);
+    expect(result.strict.summary.categories.length).toBeGreaterThan(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -462,8 +553,58 @@ test("knowledge answer supports questions file and writes batch index", async ()
     expect(result.indexPath && existsSync(result.indexPath)).toBe(true);
     const batchIndex = await readFile(result.indexPath!, "utf8");
     expect(batchIndex).toContain("Prism Knowledge Answers");
+    expect(batchIndex).toContain("- question count: 2");
+    expect(batchIndex).toContain("- answer count: 2");
+    expect(batchIndex).toContain("- strict mode: disabled");
+    expect(batchIndex).toContain(
+      "| # | digest | confidence | strict | markdown | json | question |",
+    );
     expect(batchIndex).toContain("How auth works");
     expect(batchIndex).toContain("Which entries failed");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer batch index reports strict issues per question", async () => {
+  const baseDir = await createKnowledgeAnswerRankingFixtureProject();
+  try {
+    await writeFile(
+      join(baseDir, "questions.json"),
+      JSON.stringify(
+        {
+          questions: ["How does auth flow work?", "How does auth service work?"],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      codeRoot: "repo",
+      questionsFile: "questions.json",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      strict: true,
+      minConfidence: "high",
+      force: true,
+    });
+
+    expect(result.answers).toHaveLength(2);
+    expect(result.strict.enabled).toBe(true);
+    expect(result.strict.failed).toBe(true);
+    expect(result.strict.failures.length).toBeGreaterThan(0);
+    expect(result.indexPath).toBeDefined();
+    expect(result.indexPath && existsSync(result.indexPath)).toBe(true);
+    const batchIndex = await readFile(result.indexPath!, "utf8");
+    expect(batchIndex).toContain("- strict mode: enabled (min=high)");
+    expect(batchIndex).toContain("## Strict Summary");
+    expect(batchIndex).toContain("| category | count |");
+    expect(batchIndex).toContain("## Strict Issues");
+    expect(batchIndex).toContain("fail(");
+    expect(batchIndex).toContain("code=");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -636,6 +777,10 @@ test("knowledge cli strict mode exits non-zero after writing answer files", asyn
     expect(strictAnswer.exitCode).toBe(1);
     const answerPath = join(baseDir, ".prism/knowledge/answers/how-app-page-works.md");
     expect(existsSync(answerPath)).toBe(true);
+    const stderr = Buffer.from(strictAnswer.stderr).toString("utf8");
+    expect(stderr).toContain("STRICT_SUMMARY");
+    expect(stderr).toContain("STRICT_CATEGORY");
+    expect(stderr).toContain("STRICT_FAILURE");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -964,6 +1109,77 @@ async function createKnowledgeFixtureProject(): Promise<string> {
   );
 
   return baseDir;
+}
+
+async function appendConflictingMultiRunForAppPage(baseDir: string): Promise<void> {
+  const runDigest = "fff222bbb111";
+  const runRoot = join(baseDir, ".tmp/analyze/multi", runDigest);
+  const successWorkdirRel = ".tmp/analyze/src__app__page.tsx-d2-aaaaaaaa";
+  const highInsightsRel = `${successWorkdirRel}/insights/insights-high.json`;
+  await mkdir(runRoot, { recursive: true });
+  await writeFile(
+    join(baseDir, highInsightsRel),
+    JSON.stringify(
+      {
+        entry: "src/app/page.tsx",
+        generatedFrom: "graph.json",
+        insights: [
+          {
+            id: "layer-leak-conflict",
+            severity: "high",
+            lens: "layering",
+            title: "Component calls service directly",
+            evidence: [{ from: "component:Page", to: "service:fetchMetrics" }],
+            explanation: "conflict severity",
+            suggestion: "conflict severity",
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+
+  await writeFile(
+    join(runRoot, "manifest.json"),
+    JSON.stringify(
+      {
+        configDigest: runDigest,
+        config: {
+          depth: 2,
+          maxFiles: 1000,
+          include: ["src/**"],
+          exclude: [],
+        },
+        entries: [
+          {
+            name: "app-page",
+            path: "src/app/page.tsx",
+            workdir: successWorkdirRel,
+            status: "failed",
+            artifacts: {
+              scope: `${successWorkdirRel}/scope/scope.json`,
+              symbols: `${successWorkdirRel}/symbols/symbols.json`,
+              repoIndex: `${successWorkdirRel}/repo-index/repo-index.json`,
+              graph: `${successWorkdirRel}/graph/graph.json`,
+              insights: highInsightsRel,
+              diagramsManifest: `${successWorkdirRel}/diagrams/manifest.json`,
+              finalIndex: `${successWorkdirRel}/final/index.md`,
+              finalReport: `${successWorkdirRel}/final/analysis.md`,
+            },
+            error: "synthetic conflict fixture",
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeFile(join(runRoot, "index.md"), "# Static Analysis Multi-Entry Index\n");
+  await writeFile(
+    join(runRoot, "architecture.md"),
+    "# Static Analysis Multi-Entry Architecture\n",
+  );
 }
 
 async function createKnowledgeAnswerRankingFixtureProject(): Promise<string> {
