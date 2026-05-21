@@ -104,10 +104,30 @@ prism knowledge answer \
 Answer files are Markdown and include:
 
 - grounded summary text
-- evidence entries with artifact links (`final/index.md`, `final/analysis.md`)
+- deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
+- evidence entries with artifact links (`final/index.md`, `final/analysis.md`, `final/pages/08-service-flow.md`)
 - code-file paths resolved against code root with `exists`/`missing` status
-- matched insights
+- graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
+- compact deterministic excerpts from final artifact pages
+- deduped matched insights with grouped occurrences/evidence counts
 - deterministic limits and gaps notes
+
+Cross-repo usage example (run from Prism repo):
+
+```bash
+bun bin/prism knowledge build \
+  --analyze-root /abs/target-repo/.tmp/analyze \
+  --docs-root /abs/target-repo/docs/prism \
+  --out /abs/target-repo/.prism/knowledge \
+  --force
+
+bun bin/prism knowledge answer \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --code-root /abs/target-repo \
+  --question "How does the auth system work?" \
+  --out-dir /abs/target-repo/.tmp/knowledge-answers \
+  --force
+```
 
 ## Determinism Notes
 

@@ -428,10 +428,30 @@ prism knowledge answer \
 Answers include:
 
 - grounded summary text
+- deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
 - top matched entries with `start_here` and `detail` links
 - code-file paths resolved against the selected code root (`exists`/`missing`)
-- matched insights
+- graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
+- compact artifact excerpts from `final/index.md` and `final/pages/08-service-flow.md`
+- deduped matched insights with grouped occurrence counts
 - deterministic limits and evidence notes
+
+If your analyze/docs/knowledge roots are in a different repository, run Prism from this repo and pass absolute roots. Example:
+
+```bash
+bun bin/prism knowledge build \
+  --analyze-root /abs/target-repo/.tmp/analyze \
+  --docs-root /abs/target-repo/docs/prism \
+  --out /abs/target-repo/.prism/knowledge \
+  --force
+
+bun bin/prism knowledge answer \
+  --knowledge-root /abs/target-repo/.prism/knowledge \
+  --code-root /abs/target-repo \
+  --question "How does the auth system work?" \
+  --out-dir /abs/target-repo/.tmp/knowledge-answers \
+  --force
+```
 
 ## CLI Options
 
