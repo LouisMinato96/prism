@@ -193,6 +193,7 @@ test("knowledge answer options resolver validates mode and defaults", () => {
     answerOut: undefined,
     outDir: ".prism/knowledge/answers",
     top: 8,
+    emitJson: false,
   });
 
   expect(() =>
@@ -314,6 +315,49 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("Auth flow starts at login");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer emits deterministic json when requested", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const jsonPath = result.answers[0]!.jsonOutputPath;
+    expect(jsonPath).toBeDefined();
+    expect(jsonPath && existsSync(jsonPath)).toBe(true);
+    const json = JSON.parse(await readFile(jsonPath!, "utf8")) as {
+      schemaVersion: number;
+      intent: string;
+      entries: unknown[];
+      confidence: { level: string; score: number };
+      warnings: string[];
+    };
+    expect(json.schemaVersion).toBe(1);
+    expect(json.intent).toBe("general");
+    expect(Array.isArray(json.entries)).toBe(true);
+    expect(json.entries.length).toBeGreaterThan(0);
+    expect(json.confidence.level.length).toBeGreaterThan(0);
+    expect(Number.isInteger(json.confidence.score)).toBe(true);
+    expect(Array.isArray(json.warnings)).toBe(true);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -478,6 +522,7 @@ test("knowledge cli writes answer output from --question", async () => {
         "How auth works",
         "--out-dir",
         ".prism/knowledge/answers",
+        "--emit-json",
         "--force",
       ],
       cwd: baseDir,
@@ -486,7 +531,9 @@ test("knowledge cli writes answer output from --question", async () => {
     });
     expect(answer.exitCode).toBe(0);
     const answerPath = join(baseDir, ".prism/knowledge/answers/how-auth-works.md");
+    const answerJsonPath = join(baseDir, ".prism/knowledge/answers/how-auth-works.json");
     expect(existsSync(answerPath)).toBe(true);
+    expect(existsSync(answerJsonPath)).toBe(true);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

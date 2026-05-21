@@ -435,6 +435,7 @@ Answers include:
 - compact artifact excerpts from `final/index.md` and `final/pages/08-service-flow.md`
 - deduped matched insights with grouped occurrence counts
 - deterministic limits and evidence notes
+- optional machine-readable JSON sidecars with `--emit-json`
 
 If your analyze/docs/knowledge roots are in a different repository, run Prism from this repo and pass absolute roots. Example:
 
@@ -484,6 +485,7 @@ Options:
   --answer-out <path>   Knowledge answer command: output file for single question
   --out-dir <path>      Knowledge answer command: answers output directory
   --top <n>             Knowledge answer command: max evidence rows per section
+  --emit-json           Knowledge answer command: also emit JSON sidecar(s)
 ```
 
 ## Environment

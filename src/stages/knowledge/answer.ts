@@ -123,6 +123,7 @@ export interface KnowledgeAnswerOptions {
   answerOut?: string;
   outDir?: string;
   top?: number;
+  emitJson?: boolean;
   force?: boolean;
 }
 
@@ -132,8 +133,56 @@ export interface KnowledgeAnswerResult {
   answers: Array<{
     question: string;
     outputPath: string;
+    jsonOutputPath?: string;
   }>;
   indexPath?: string;
+}
+
+interface KnowledgeAnswerJson {
+  schemaVersion: 1;
+  question: string;
+  questionDigest: string;
+  intent: KnowledgeAnswerIntent;
+  intentKeywords: string[];
+  generatedAt: string;
+  knowledgeRoot: string;
+  codeRoot: string;
+  topLimit: number;
+  confidence: {
+    level: "low" | "medium" | "high";
+    score: number;
+  };
+  summary: string;
+  entries: Array<{
+    score: number;
+    run: string;
+    name: string;
+    path: string;
+    status: "success" | "failed";
+    startHere: string;
+    detail: string;
+    serviceFlow: string;
+    codeFile: string;
+    codeExists: boolean;
+    flowSignal: EntryGraphStats;
+    diagramSignal: string;
+    finalExcerpt: string;
+    serviceFlowExcerpt: string;
+    matchedTokens: string[];
+  }>;
+  insights: Array<{
+    score: number;
+    severity: "high" | "medium" | "low" | "info";
+    entry: string;
+    title: string;
+    lens: string;
+    occurrences: number;
+    evidenceCount: number;
+    ids: string[];
+    matchedTokens: string[];
+  }>;
+  warnings: string[];
+  limits: string[];
 }
 
 interface LoadedKnowledge {
@@ -194,6 +243,7 @@ export async function runKnowledgeAnswer(
   const knowledgeRootInput = options.knowledgeRoot ?? ".prism/knowledge";
   const outDirInput = options.outDir ?? ".prism/knowledge/answers";
   const top = options.top ?? 8;
+  const emitJson = options.emitJson === true;
   const force = options.force === true;
 
   if (!options.question && !options.questionsFile) {
@@ -226,7 +276,11 @@ export async function runKnowledgeAnswer(
   );
 
   const usedOutputNames = new Set<string>();
-  const answers: Array<{ question: string; outputPath: string }> = [];
+  const answers: Array<{
+    question: string;
+    outputPath: string;
+    jsonOutputPath?: string;
+  }> = [];
 
   for (const [index, question] of questions.entries()) {
     const outputAbs =
@@ -234,7 +288,7 @@ export async function runKnowledgeAnswer(
         ? resolvePath(baseDir, options.answerOut)
         : uniqueAnswerPath(outDirAbs, slugifyQuestion(question, index), usedOutputNames);
 
-    const content = await renderAnswer({
+    const rendered = await renderAnswer({
       question,
       knowledgeRoot: toDisplayPath(baseDir, knowledgeRootAbs),
       codeRoot: toDisplayPath(baseDir, codeRootAbs),
@@ -246,10 +300,20 @@ export async function runKnowledgeAnswer(
       analyzeRepoRootAbs,
       graphStatsByEntry,
     });
-    await writeTextIfChanged(outputAbs, content, force);
+    await writeTextIfChanged(outputAbs, rendered.markdown, force);
+
+    let jsonOutputPath: string | undefined;
+    if (emitJson) {
+      const jsonPath = replaceExtension(outputAbs, ".json");
+      const jsonText = `${JSON.stringify(rendered.json, null, 2)}\n`;
+      await writeTextIfChanged(jsonPath, jsonText, force);
+      jsonOutputPath = jsonPath;
+    }
+
     answers.push({
       question,
       outputPath: outputAbs,
+      jsonOutputPath,
     });
     usedOutputNames.add(outputAbs);
   }
@@ -333,7 +397,7 @@ async function renderAnswer(input: {
   codeRootAbs: string;
   analyzeRepoRootAbs: string;
   graphStatsByEntry: Map<string, EntryGraphStats>;
-}): Promise<string> {
+}): Promise<{ markdown: string; json: KnowledgeAnswerJson }> {
   const query = buildQueryProfile(input.question);
   const entryMatches = rankEntryMatches(
     query,
@@ -366,6 +430,17 @@ async function renderAnswer(input: {
     .update(input.question)
     .digest("hex")
     .slice(0, 12);
+  const summary = buildSummaryParagraph(
+    input.question,
+    query.tokens,
+    entryMatches,
+    insightMatches,
+  );
+  const limits = [
+    "This answer is deterministic and grounded only in existing Prism knowledge artifacts.",
+    "It does not infer facts that are absent from artifact evidence.",
+    "If evidence is thin or missing, re-run `prism analyze` for additional entrypoints and rebuild knowledge.",
+  ];
 
   const lines: string[] = [];
   lines.push("# Prism Knowledge Answer");
@@ -385,9 +460,7 @@ async function renderAnswer(input: {
   lines.push("");
   lines.push("## Answer");
   lines.push("");
-  lines.push(
-    buildSummaryParagraph(input.question, query.tokens, entryMatches, insightMatches),
-  );
+  lines.push(summary);
   lines.push("");
   lines.push("## Evidence Entries");
   lines.push("");
@@ -454,16 +527,68 @@ async function renderAnswer(input: {
   lines.push("");
   lines.push("## Limits");
   lines.push("");
-  lines.push(
-    "- This answer is deterministic and grounded only in existing Prism knowledge artifacts.",
-  );
-  lines.push("- It does not infer facts that are absent from artifact evidence.");
-  lines.push(
-    "- If evidence is thin or missing, re-run `prism analyze` for additional entrypoints and rebuild knowledge.",
-  );
+  lines.push(...limits.map((limit) => `- ${limit}`));
   lines.push("");
 
-  return `${lines.join("\n")}\n`;
+  const json: KnowledgeAnswerJson = {
+    schemaVersion: 1,
+    question: input.question,
+    questionDigest,
+    intent: query.intent,
+    intentKeywords: query.matchedIntentKeywords,
+    generatedAt: input.generatedAt,
+    knowledgeRoot: input.knowledgeRoot,
+    codeRoot: input.codeRoot,
+    topLimit: input.top,
+    confidence,
+    summary,
+    entries: entryMatches.map((match) => {
+      const artifactEvidence =
+        artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+        emptyArtifactEvidence(match.entry.finalIndex);
+      return {
+        score: match.score,
+        run: match.run.configDigest,
+        name: match.entry.name,
+        path: match.entry.path,
+        status: match.entry.status,
+        startHere: match.entry.finalIndex,
+        detail: match.entry.finalReport,
+        serviceFlow: deriveServiceFlowPath(match.entry.finalIndex),
+        codeFile: match.codePath,
+        codeExists: match.codeExists,
+        flowSignal: match.graphStats,
+        diagramSignal: renderDiagramSignal(artifactEvidence),
+        finalExcerpt: renderSnippetValue(
+          artifactEvidence.finalIndexSnippet,
+          artifactEvidence.finalIndexExists,
+        ),
+        serviceFlowExcerpt: renderSnippetValue(
+          artifactEvidence.serviceFlowSnippet,
+          artifactEvidence.serviceFlowExists,
+        ),
+        matchedTokens: match.matchedTokens,
+      };
+    }),
+    insights: insightMatches.map((match) => ({
+      score: match.score,
+      severity: match.insight.severity,
+      entry: match.insight.entry,
+      title: match.insight.title,
+      lens: match.insight.lens,
+      occurrences: match.occurrences,
+      evidenceCount: match.aggregatedEvidenceCount,
+      ids: match.groupedIds,
+      matchedTokens: match.matchedTokens,
+    })),
+    warnings,
+    limits,
+  };
+
+  return {
+    markdown: `${lines.join("\n")}\n`,
+    json,
+  };
 }
 
 function buildSummaryParagraph(
@@ -985,8 +1110,7 @@ function emptyArtifactEvidence(finalIndexPath: string): EntryArtifactEvidence {
     serviceFlowPath: deriveServiceFlowPath(finalIndexPath),
     serviceFlowExists: false,
     diagramsManifestPath: join(
-      dirname(finalIndexPath),
-      "..",
+      dirname(dirname(finalIndexPath)),
       "diagrams",
       "manifest.json",
     ),
@@ -1113,6 +1237,12 @@ function uniqueAnswerPath(
     if (!usedOutputNames.has(next)) return next;
     i += 1;
   }
+}
+
+function replaceExtension(path: string, ext: string): string {
+  const dot = path.lastIndexOf(".");
+  if (dot === -1) return `${path}${ext}`;
+  return `${path.slice(0, dot)}${ext}`;
 }
 
 async function resolveGeneratedAt(paths: string[]): Promise<string> {

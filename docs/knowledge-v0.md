@@ -88,7 +88,8 @@ prism knowledge answer \
   --question "How does auth work?" \
   --knowledge-root .prism/knowledge \
   --code-root /absolute/path/to/target-repo \
-  --out-dir .prism/knowledge/answers
+  --out-dir .prism/knowledge/answers \
+  --emit-json
 ```
 
 Batch questions:
@@ -111,6 +112,7 @@ Answer files are Markdown and include:
 - compact deterministic excerpts from final artifact pages
 - deduped matched insights with grouped occurrences/evidence counts
 - deterministic limits and gaps notes
+- optional JSON sidecar output when `--emit-json` is enabled
 
 Cross-repo usage example (run from Prism repo):
 

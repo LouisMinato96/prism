@@ -12,6 +12,7 @@ export interface ResolvedKnowledgeAnswerOptions {
   answerOut?: string;
   outDir: string;
   top: number;
+  emitJson: boolean;
 }
 
 export function resolveKnowledgeBuildOptions(values: {
@@ -34,6 +35,7 @@ export function resolveKnowledgeAnswerOptions(values: {
   "answer-out"?: string;
   "out-dir"?: string;
   top?: string;
+  "emit-json"?: boolean;
 }): ResolvedKnowledgeAnswerOptions {
   const knowledgeRoot = cleanOption(values["knowledge-root"], ".prism/knowledge");
   const codeRoot = cleanOptional(values["code-root"]);
@@ -43,6 +45,7 @@ export function resolveKnowledgeAnswerOptions(values: {
   const outDir = cleanOption(values["out-dir"], ".prism/knowledge/answers");
   const topRaw = cleanOptional(values.top);
   const top = topRaw === undefined ? 8 : Number(topRaw);
+  const emitJson = values["emit-json"] === true;
 
   if (!Number.isInteger(top) || top < 1) {
     throw new Error(`invalid --top value: ${values.top}`);
@@ -66,6 +69,7 @@ export function resolveKnowledgeAnswerOptions(values: {
     answerOut,
     outDir,
     top,
+    emitJson,
   };
 }
 

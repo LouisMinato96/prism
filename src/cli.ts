@@ -58,6 +58,7 @@ OPTIONS:
   --answer-out <path>   Knowledge answer command: output file for single question
   --out-dir <path>      Knowledge answer command: output directory (default: .prism/knowledge/answers)
   --top <n>             Knowledge answer command: max evidence rows per section (default: 8)
+  --emit-json           Knowledge answer command: also emit machine-readable JSON sidecar(s)
   --help               Show this message
 
 ENV VARS:
@@ -93,6 +94,7 @@ async function main() {
       "answer-out": { type: "string" },
       "out-dir": { type: "string" },
       top: { type: "string" },
+      "emit-json": { type: "boolean", default: false },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -137,6 +139,7 @@ async function main() {
           "answer-out": values["answer-out"] as string | undefined,
           "out-dir": values["out-dir"] as string | undefined,
           top: values.top as string | undefined,
+          "emit-json": values["emit-json"] === true,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -152,10 +155,14 @@ async function main() {
         answerOut: answerOptions.answerOut,
         outDir: answerOptions.outDir,
         top: answerOptions.top,
+        emitJson: answerOptions.emitJson,
         force,
       });
       for (const answer of result.answers) {
         log.done(`${answer.question} -> ${answer.outputPath}`, "answer");
+        if (answer.jsonOutputPath) {
+          log.done(`${answer.question} -> ${answer.jsonOutputPath}`, "answer-json");
+        }
       }
       if (result.indexPath) {
         log.done(result.indexPath, "answers-index");
