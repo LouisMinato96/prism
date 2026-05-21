@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, normalize } from "node:path";
 import { log } from "../../lib/log.ts";
 import {
+  AnalyzeDiagramSchema,
   AnalyzeGraphSchema,
   ArtifactsIndexSchema,
   KnowledgePackSchema,
@@ -171,6 +172,20 @@ interface EntryGraphStats {
   storeEdges: number;
 }
 
+interface EntryArtifactEvidence {
+  finalIndexPath: string;
+  finalIndexExists: boolean;
+  finalIndexSnippet?: string;
+  serviceFlowPath: string;
+  serviceFlowExists: boolean;
+  serviceFlowSnippet?: string;
+  diagramsManifestPath: string;
+  diagramsManifestExists: boolean;
+  diagramCount: number;
+  nonEmptyDiagramCount: number;
+  topDiagrams: Array<{ name: string; edgeCount: number }>;
+}
+
 export async function runKnowledgeAnswer(
   options: KnowledgeAnswerOptions,
 ): Promise<KnowledgeAnswerResult> {
@@ -193,10 +208,10 @@ export async function runKnowledgeAnswer(
   await mkdir(outDirAbs, { recursive: true });
 
   const loaded = await loadKnowledge(knowledgeRootAbs);
+  const analyzeRepoRootAbs = resolveAnalyzeRepoRoot(baseDir, loaded.pack.analyzeRoot);
   const codeRootAbs = resolveCodeRoot(baseDir, loaded.pack.analyzeRoot, options.codeRoot);
   const graphStatsByEntry = await loadGraphStatsForArtifacts({
-    baseDir,
-    analyzeRootFromPack: loaded.pack.analyzeRoot,
+    analyzeRepoRootAbs,
     artifactsIndex: loaded.index,
   });
   const questions = await loadQuestions({
@@ -219,7 +234,7 @@ export async function runKnowledgeAnswer(
         ? resolvePath(baseDir, options.answerOut)
         : uniqueAnswerPath(outDirAbs, slugifyQuestion(question, index), usedOutputNames);
 
-    const content = renderAnswer({
+    const content = await renderAnswer({
       question,
       knowledgeRoot: toDisplayPath(baseDir, knowledgeRootAbs),
       codeRoot: toDisplayPath(baseDir, codeRootAbs),
@@ -228,6 +243,7 @@ export async function runKnowledgeAnswer(
       pack: loaded.pack,
       index: loaded.index,
       codeRootAbs,
+      analyzeRepoRootAbs,
       graphStatsByEntry,
     });
     await writeTextIfChanged(outputAbs, content, force);
@@ -306,7 +322,7 @@ async function loadQuestions(input: {
   return normalized;
 }
 
-function renderAnswer(input: {
+async function renderAnswer(input: {
   question: string;
   knowledgeRoot: string;
   codeRoot: string;
@@ -315,8 +331,9 @@ function renderAnswer(input: {
   pack: KnowledgePack;
   index: ArtifactsIndex;
   codeRootAbs: string;
+  analyzeRepoRootAbs: string;
   graphStatsByEntry: Map<string, EntryGraphStats>;
-}): string {
+}): Promise<string> {
   const query = buildQueryProfile(input.question);
   const entryMatches = rankEntryMatches(
     query,
@@ -329,6 +346,11 @@ function renderAnswer(input: {
     query.tokens,
     input.pack,
   ).slice(0, input.top);
+  const artifactEvidenceByEntry = await loadArtifactEvidenceForEntries({
+    entries: entryMatches,
+    analyzeRepoRootAbs: input.analyzeRepoRootAbs,
+    queryTokens: query.tokens,
+  });
 
   const questionDigest = createHash("sha1")
     .update(input.question)
@@ -362,6 +384,9 @@ function renderAnswer(input: {
     lines.push("No matching entries found in artifacts-index.");
   } else {
     for (const match of entryMatches) {
+      const artifactEvidence =
+        artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+        emptyArtifactEvidence(match.entry.finalIndex);
       lines.push(
         `- score ${match.score} | run ${match.run.configDigest} | ${match.entry.name} | ${match.entry.path}`,
       );
@@ -376,6 +401,13 @@ function renderAnswer(input: {
       );
       lines.push(
         `  - flow_signal: edges=${match.graphStats.edgeCount}, calls=${match.graphStats.calls}, service_calls=${match.graphStats.serviceCalls}, routes=${match.graphStats.routes}, context=${match.graphStats.contextEdges}, store=${match.graphStats.storeEdges}`,
+      );
+      lines.push(`  - diagram_signal: ${renderDiagramSignal(artifactEvidence)}`);
+      lines.push(
+        `  - final_excerpt: ${renderSnippetValue(artifactEvidence.finalIndexSnippet, artifactEvidence.finalIndexExists)}`,
+      );
+      lines.push(
+        `  - service_flow_excerpt: ${renderSnippetValue(artifactEvidence.serviceFlowSnippet, artifactEvidence.serviceFlowExists)}`,
       );
       if (match.matchedTokens.length > 0) {
         lines.push(`  - matched tokens: ${match.matchedTokens.join(", ")}`);
@@ -693,20 +725,15 @@ function scoreGraphSignalBoost(
 }
 
 async function loadGraphStatsForArtifacts(input: {
-  baseDir: string;
-  analyzeRootFromPack: string;
+  analyzeRepoRootAbs: string;
   artifactsIndex: ArtifactsIndex;
 }): Promise<Map<string, EntryGraphStats>> {
   const statsByEntry = new Map<string, EntryGraphStats>();
-  const analyzeRepoRootAbs = resolveAnalyzeRepoRoot(
-    input.baseDir,
-    input.analyzeRootFromPack,
-  );
 
   for (const run of input.artifactsIndex.runs) {
     for (const entry of run.entries) {
       const graphPath = resolvePath(
-        analyzeRepoRootAbs,
+        input.analyzeRepoRootAbs,
         `${entry.workdir}/graph/graph.json`,
       );
       const stats = await loadEntryGraphStats(graphPath);
@@ -715,6 +742,151 @@ async function loadGraphStatsForArtifacts(input: {
   }
 
   return statsByEntry;
+}
+
+async function loadArtifactEvidenceForEntries(input: {
+  entries: EntryMatch[];
+  analyzeRepoRootAbs: string;
+  queryTokens: string[];
+}): Promise<Map<string, EntryArtifactEvidence>> {
+  const pairs = await Promise.all(
+    input.entries.map(async (match) => {
+      const key = entryRunKey(match.run.configDigest, match.entry);
+      const finalIndexPath = resolvePath(
+        input.analyzeRepoRootAbs,
+        match.entry.finalIndex,
+      );
+      const serviceFlowRel = deriveServiceFlowPath(match.entry.finalIndex);
+      const serviceFlowPath = resolvePath(input.analyzeRepoRootAbs, serviceFlowRel);
+      const diagramsManifestPath = resolvePath(
+        input.analyzeRepoRootAbs,
+        join(match.entry.workdir, "diagrams", "manifest.json"),
+      );
+
+      const finalIndexText = await readArtifactTextIfExists(finalIndexPath);
+      const serviceFlowText = await readArtifactTextIfExists(serviceFlowPath);
+      const diagrams = await loadDiagramManifest(diagramsManifestPath);
+
+      const evidence: EntryArtifactEvidence = {
+        finalIndexPath,
+        finalIndexExists: finalIndexText !== undefined,
+        finalIndexSnippet: buildArtifactSnippet(finalIndexText, input.queryTokens),
+        serviceFlowPath,
+        serviceFlowExists: serviceFlowText !== undefined,
+        serviceFlowSnippet: buildArtifactSnippet(serviceFlowText, input.queryTokens),
+        diagramsManifestPath,
+        diagramsManifestExists: existsSync(diagramsManifestPath),
+        diagramCount: diagrams.length,
+        nonEmptyDiagramCount: diagrams.filter((diagram) => diagram.edgeCount > 0).length,
+        topDiagrams: diagrams
+          .slice()
+          .sort((a, b) => b.edgeCount - a.edgeCount || a.name.localeCompare(b.name))
+          .slice(0, 3)
+          .map((diagram) => ({
+            name: diagram.name,
+            edgeCount: diagram.edgeCount,
+          })),
+      };
+      return [key, evidence] as const;
+    }),
+  );
+
+  return new Map(pairs);
+}
+
+async function loadDiagramManifest(
+  diagramManifestPath: string,
+): Promise<Array<{ name: string; edgeCount: number }>> {
+  if (!existsSync(diagramManifestPath)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(diagramManifestPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const parsed = AnalyzeDiagramSchema.array().safeParse(raw);
+  if (!parsed.success) return [];
+  return parsed.data.map((diagram) => ({
+    name: diagram.name,
+    edgeCount: diagram.edgeCount,
+  }));
+}
+
+async function readArtifactTextIfExists(path: string): Promise<string | undefined> {
+  if (!existsSync(path)) return undefined;
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function buildArtifactSnippet(
+  text: string | undefined,
+  queryTokens: string[],
+): string | undefined {
+  if (!text) return undefined;
+  const normalizedTokens = queryTokens.filter((token) => token.length > 0);
+  const cleanedLines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !line.startsWith("```"))
+    .map((line) =>
+      line
+        .replace(/^#{1,6}\s+/, "")
+        .replace(/^[-*]\s+/, "")
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter((line) => line.length > 0);
+
+  if (cleanedLines.length === 0) return undefined;
+
+  const matched = cleanedLines.filter((line) => {
+    const normalizedLine = normalizeText(line);
+    return normalizedTokens.some((token) => normalizedLine.includes(token));
+  });
+  const selected = (matched.length > 0 ? matched : cleanedLines).slice(0, 2);
+  const merged = selected.join(" | ");
+  if (merged.length <= 220) return merged;
+  return `${merged.slice(0, 217).trimEnd()}...`;
+}
+
+function renderDiagramSignal(evidence: EntryArtifactEvidence): string {
+  if (!evidence.diagramsManifestExists) return "diagrams manifest missing";
+  if (evidence.diagramCount === 0) return "0 diagrams";
+  const top =
+    evidence.topDiagrams.length === 0
+      ? "-"
+      : evidence.topDiagrams
+          .map((diagram) => `${diagram.name}(${diagram.edgeCount})`)
+          .join(", ");
+  return `${evidence.diagramCount} diagrams, non_empty=${evidence.nonEmptyDiagramCount}, top=${top}`;
+}
+
+function renderSnippetValue(snippet: string | undefined, fileExists: boolean): string {
+  if (snippet) return snippet;
+  return fileExists ? "no matching excerpt" : "file missing";
+}
+
+function emptyArtifactEvidence(finalIndexPath: string): EntryArtifactEvidence {
+  return {
+    finalIndexPath,
+    finalIndexExists: false,
+    serviceFlowPath: deriveServiceFlowPath(finalIndexPath),
+    serviceFlowExists: false,
+    diagramsManifestPath: join(
+      dirname(finalIndexPath),
+      "..",
+      "diagrams",
+      "manifest.json",
+    ),
+    diagramsManifestExists: false,
+    diagramCount: 0,
+    nonEmptyDiagramCount: 0,
+    topDiagrams: [],
+  };
 }
 
 async function loadEntryGraphStats(graphPath: string): Promise<EntryGraphStats> {
@@ -805,10 +977,7 @@ function normalizeText(input: string): string {
 }
 
 function deriveServiceFlowPath(finalIndexPath: string): string {
-  const parts = normalize(finalIndexPath).split(/[/\\]/);
-  if (parts.length < 2) return finalIndexPath;
-  parts.pop();
-  return join(...parts, "pages", "08-service-flow.md")
+  return join(dirname(normalize(finalIndexPath)), "pages", "08-service-flow.md")
     .split("\\")
     .join("/");
 }

@@ -259,7 +259,7 @@ test("knowledge answer dedupes repeated insights into grouped evidence rows", as
     const result = await runKnowledgeAnswer({
       baseDir,
       knowledgeRoot: ".prism/knowledge",
-      question: "service debug",
+      question: "app service debug",
       outDir: ".prism/knowledge/answers",
       top: 5,
       force: true,
@@ -268,6 +268,7 @@ test("knowledge answer dedupes repeated insights into grouped evidence rows", as
     const content = await readFile(result.answers[0]!.outputPath, "utf8");
     expect(content).toContain("occurrences: 2");
     expect(content).toContain("ids: layer-leak-1, layer-leak-2");
+    expect(content).toContain("diagram_signal:");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -303,6 +304,10 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("- code root:");
     expect(content).toContain("code_file:");
     expect(content).toContain("flow_signal:");
+    expect(content).toContain("diagram_signal:");
+    expect(content).toContain("final_excerpt:");
+    expect(content).toContain("service_flow_excerpt:");
+    expect(content).toContain("Auth flow starts at login");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
   } finally {
@@ -505,7 +510,9 @@ async function createKnowledgeFixtureProject(): Promise<string> {
   await mkdir(join(failedWorkdir, "scope"), { recursive: true });
 
   const diagramFile = join(successWorkdir, "diagrams", "component-tree.md");
+  const serviceFlowDiagramFile = join(successWorkdir, "diagrams", "service-flow.md");
   await writeFile(diagramFile, "# Component Tree\n");
+  await writeFile(serviceFlowDiagramFile, "# Service Flow\n");
   await writeFile(
     join(successWorkdir, "scope", "scope.json"),
     JSON.stringify(
@@ -673,13 +680,36 @@ async function createKnowledgeFixtureProject(): Promise<string> {
           path: diagramFile,
           edgeCount: 0,
         },
+        {
+          name: "service-flow",
+          title: "Service Flow",
+          path: serviceFlowDiagramFile,
+          edgeCount: 4,
+        },
       ],
       null,
       2,
     ),
   );
-  await writeFile(join(successWorkdir, "final", "index.md"), "# index\n");
+  await writeFile(
+    join(successWorkdir, "final", "index.md"),
+    [
+      "# index",
+      "",
+      "Auth flow starts at login and creates a session token for the app shell.",
+      "",
+    ].join("\n"),
+  );
   await writeFile(join(successWorkdir, "final", "analysis.md"), "# analysis\n");
+  await writeFile(
+    join(successWorkdir, "final/pages", "08-service-flow.md"),
+    [
+      "# Service Flow",
+      "",
+      "Auth service exchanges credentials for a JWT session token.",
+      "",
+    ].join("\n"),
+  );
   await writeFile(
     join(successWorkdir, "final/pages", "11-symbol-directory.md"),
     "# Symbol Directory\n",
@@ -750,7 +780,7 @@ async function createKnowledgeFixtureProject(): Promise<string> {
           files: 1,
           symbols: 1,
           edges: 0,
-          diagrams: 1,
+          diagrams: 2,
           insights: 1,
         },
       },
