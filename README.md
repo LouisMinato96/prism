@@ -432,6 +432,7 @@ Answers include:
 - top matched entries with `start_here` and `detail` links
 - code-file paths resolved against the selected code root (`exists`/`missing`)
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
+- repo-index evidence signals (`repo_signal`) used for deterministic ranking boosts
 - compact artifact excerpts from `final/index.md` and `final/pages/08-service-flow.md`
 - deduped matched insights with grouped occurrence counts
 - deterministic limits and evidence notes

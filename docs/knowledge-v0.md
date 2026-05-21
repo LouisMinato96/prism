@@ -109,6 +109,7 @@ Answer files are Markdown and include:
 - evidence entries with artifact links (`final/index.md`, `final/analysis.md`, `final/pages/08-service-flow.md`)
 - code-file paths resolved against code root with `exists`/`missing` status
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
+- repo-index evidence signals (`repo_signal`) for deterministic intent-aware ranking
 - compact deterministic excerpts from final artifact pages
 - deduped matched insights with grouped occurrences/evidence counts
 - deterministic limits and gaps notes

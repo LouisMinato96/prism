@@ -6,6 +6,7 @@ import { log } from "../../lib/log.ts";
 import {
   AnalyzeDiagramSchema,
   AnalyzeGraphSchema,
+  AnalyzeRepoIndexSchema,
   ArtifactsIndexSchema,
   KnowledgePackSchema,
   KnowledgeQuestionsFileSchema,
@@ -165,6 +166,19 @@ interface KnowledgeAnswerJson {
     codeFile: string;
     codeExists: boolean;
     flowSignal: EntryGraphStats;
+    repoSignal: {
+      files: number;
+      symbols: number;
+      serviceSymbols: number;
+      contextSymbols: number;
+      storeSymbols: number;
+      hookSymbols: number;
+      componentSymbols: number;
+      authHints: number;
+      permissionHints: number;
+      dataHints: number;
+      debugHints: number;
+    };
     diagramSignal: string;
     finalExcerpt: string;
     serviceFlowExcerpt: string;
@@ -198,6 +212,7 @@ interface EntryMatch {
   codePath: string;
   codeExists: boolean;
   graphStats: EntryGraphStats;
+  repoIndexSignals: EntryRepoIndexSignals;
   score: number;
   matchedTokens: string[];
 }
@@ -219,6 +234,22 @@ interface EntryGraphStats {
   routes: number;
   contextEdges: number;
   storeEdges: number;
+}
+
+interface EntryRepoIndexSignals {
+  exists: boolean;
+  fileCount: number;
+  symbolCount: number;
+  serviceSymbols: number;
+  contextSymbols: number;
+  storeSymbols: number;
+  hookSymbols: number;
+  componentSymbols: number;
+  authHints: number;
+  permissionHints: number;
+  dataHints: number;
+  debugHints: number;
+  searchText: string;
 }
 
 interface EntryArtifactEvidence {
@@ -264,6 +295,10 @@ export async function runKnowledgeAnswer(
     analyzeRepoRootAbs,
     artifactsIndex: loaded.index,
   });
+  const repoIndexSignalsByEntry = await loadRepoIndexSignalsForArtifacts({
+    analyzeRepoRootAbs,
+    artifactsIndex: loaded.index,
+  });
   const questions = await loadQuestions({
     baseDir,
     question: options.question,
@@ -299,6 +334,7 @@ export async function runKnowledgeAnswer(
       codeRootAbs,
       analyzeRepoRootAbs,
       graphStatsByEntry,
+      repoIndexSignalsByEntry,
     });
     await writeTextIfChanged(outputAbs, rendered.markdown, force);
 
@@ -397,6 +433,7 @@ async function renderAnswer(input: {
   codeRootAbs: string;
   analyzeRepoRootAbs: string;
   graphStatsByEntry: Map<string, EntryGraphStats>;
+  repoIndexSignalsByEntry: Map<string, EntryRepoIndexSignals>;
 }): Promise<{ markdown: string; json: KnowledgeAnswerJson }> {
   const query = buildQueryProfile(input.question);
   const entryMatches = rankEntryMatches(
@@ -404,6 +441,7 @@ async function renderAnswer(input: {
     input.index,
     input.codeRootAbs,
     input.graphStatsByEntry,
+    input.repoIndexSignalsByEntry,
   ).slice(0, input.top);
   const insightMatches = rankInsightMatches(
     input.question,
@@ -486,6 +524,7 @@ async function renderAnswer(input: {
       lines.push(
         `  - flow_signal: edges=${match.graphStats.edgeCount}, calls=${match.graphStats.calls}, service_calls=${match.graphStats.serviceCalls}, routes=${match.graphStats.routes}, context=${match.graphStats.contextEdges}, store=${match.graphStats.storeEdges}`,
       );
+      lines.push(`  - repo_signal: ${renderRepoSignal(match.repoIndexSignals)}`);
       lines.push(`  - diagram_signal: ${renderDiagramSignal(artifactEvidence)}`);
       lines.push(
         `  - final_excerpt: ${renderSnippetValue(artifactEvidence.finalIndexSnippet, artifactEvidence.finalIndexExists)}`,
@@ -558,6 +597,19 @@ async function renderAnswer(input: {
         codeFile: match.codePath,
         codeExists: match.codeExists,
         flowSignal: match.graphStats,
+        repoSignal: {
+          files: match.repoIndexSignals.fileCount,
+          symbols: match.repoIndexSignals.symbolCount,
+          serviceSymbols: match.repoIndexSignals.serviceSymbols,
+          contextSymbols: match.repoIndexSignals.contextSymbols,
+          storeSymbols: match.repoIndexSignals.storeSymbols,
+          hookSymbols: match.repoIndexSignals.hookSymbols,
+          componentSymbols: match.repoIndexSignals.componentSymbols,
+          authHints: match.repoIndexSignals.authHints,
+          permissionHints: match.repoIndexSignals.permissionHints,
+          dataHints: match.repoIndexSignals.dataHints,
+          debugHints: match.repoIndexSignals.debugHints,
+        },
         diagramSignal: renderDiagramSignal(artifactEvidence),
         finalExcerpt: renderSnippetValue(
           artifactEvidence.finalIndexSnippet,
@@ -622,13 +674,19 @@ function rankEntryMatches(
   artifactsIndex: ArtifactsIndex,
   codeRootAbs: string,
   graphStatsByEntry: Map<string, EntryGraphStats>,
+  repoIndexSignalsByEntry: Map<string, EntryRepoIndexSignals>,
 ): EntryMatch[] {
   const normalizedQuestion = normalizeText(query.question);
   const matches: EntryMatch[] = [];
 
   for (const run of artifactsIndex.runs) {
     for (const entry of run.entries) {
-      const haystack = normalizeText(`${entry.name} ${entry.path}`);
+      const repoIndexSignals =
+        repoIndexSignalsByEntry.get(entryRunKey(run.configDigest, entry)) ??
+        emptyRepoIndexSignals();
+      const haystack = normalizeText(
+        `${entry.name} ${entry.path} ${repoIndexSignals.searchText}`,
+      );
       const tokenMatches = query.tokens.filter((token) => haystack.includes(token));
       const codePath = resolvePath(codeRootAbs, entry.path);
       const codeExists = existsSync(codePath);
@@ -638,6 +696,7 @@ function rankEntryMatches(
       if (tokenMatches.length > 0 && entry.status === "success") score += 3;
       if (tokenMatches.length > 0 && codeExists) score += 2;
       if (tokenMatches.length > 0 && graphStats.exists) score += 2;
+      if (tokenMatches.length > 0 && repoIndexSignals.exists) score += 1;
       if (
         tokenMatches.length > 0 &&
         normalizedQuestion.includes(normalizeText(entry.name))
@@ -652,6 +711,7 @@ function rankEntryMatches(
         normalizedQuestion,
       );
       score += scoreGraphSignalBoost(query.intent, graphStats);
+      score += scoreRepoIndexSignalBoost(query.intent, repoIndexSignals);
       if (score <= 0) continue;
       matches.push({
         run,
@@ -659,6 +719,7 @@ function rankEntryMatches(
         codePath,
         codeExists,
         graphStats,
+        repoIndexSignals,
         score,
         matchedTokens: tokenMatches,
       });
@@ -868,6 +929,42 @@ function scoreGraphSignalBoost(
   return Math.min(4, Math.floor(graphStats.edgeCount / 6));
 }
 
+function scoreRepoIndexSignalBoost(
+  intent: KnowledgeAnswerIntent,
+  repoSignals: EntryRepoIndexSignals,
+): number {
+  if (!repoSignals.exists) return 0;
+
+  if (intent === "auth-flow") {
+    return Math.min(
+      10,
+      repoSignals.authHints * 2 +
+        repoSignals.serviceSymbols +
+        Math.floor(repoSignals.hookSymbols / 2),
+    );
+  }
+  if (intent === "permissions") {
+    return Math.min(
+      10,
+      repoSignals.permissionHints * 2 +
+        repoSignals.contextSymbols +
+        Math.floor(repoSignals.componentSymbols / 3),
+    );
+  }
+  if (intent === "data-flow") {
+    return Math.min(
+      10,
+      repoSignals.dataHints +
+        repoSignals.serviceSymbols +
+        Math.floor(repoSignals.storeSymbols / 2),
+    );
+  }
+  if (intent === "failure-debug") {
+    return Math.min(8, repoSignals.debugHints + Math.floor(repoSignals.symbolCount / 20));
+  }
+  return Math.min(4, Math.floor(repoSignals.symbolCount / 30));
+}
+
 async function loadGraphStatsForArtifacts(input: {
   analyzeRepoRootAbs: string;
   artifactsIndex: ArtifactsIndex;
@@ -886,6 +983,155 @@ async function loadGraphStatsForArtifacts(input: {
   }
 
   return statsByEntry;
+}
+
+async function loadRepoIndexSignalsForArtifacts(input: {
+  analyzeRepoRootAbs: string;
+  artifactsIndex: ArtifactsIndex;
+}): Promise<Map<string, EntryRepoIndexSignals>> {
+  const signalsByEntry = new Map<string, EntryRepoIndexSignals>();
+
+  for (const run of input.artifactsIndex.runs) {
+    for (const entry of run.entries) {
+      const repoIndexPath = resolvePath(input.analyzeRepoRootAbs, entry.repoIndex);
+      const signals = await loadEntryRepoIndexSignals(repoIndexPath);
+      signalsByEntry.set(entryRunKey(run.configDigest, entry), signals);
+    }
+  }
+
+  return signalsByEntry;
+}
+
+async function loadEntryRepoIndexSignals(
+  repoIndexPath: string,
+): Promise<EntryRepoIndexSignals> {
+  if (!existsSync(repoIndexPath)) return emptyRepoIndexSignals();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(repoIndexPath, "utf8"));
+  } catch {
+    return emptyRepoIndexSignals();
+  }
+  const parsed = AnalyzeRepoIndexSchema.safeParse(raw);
+  if (!parsed.success) return emptyRepoIndexSignals();
+  return summarizeRepoIndexSignals(parsed.data);
+}
+
+function summarizeRepoIndexSignals(repoIndex: {
+  fileCount: number;
+  symbolCount: number;
+  typeCounts: Record<string, number>;
+  files: Array<{
+    path: string;
+    symbols: Array<{ name: string }>;
+    exportedSymbols: string[];
+  }>;
+}): EntryRepoIndexSignals {
+  const searchableParts: string[] = [];
+  const authKeywords = [
+    "auth",
+    "oauth",
+    "sso",
+    "login",
+    "logout",
+    "session",
+    "token",
+    "impersonat",
+    "firewall",
+  ];
+  const permissionKeywords = [
+    "permission",
+    "role",
+    "access",
+    "guard",
+    "rbac",
+    "acl",
+    "denied",
+    "allow",
+    "restrict",
+  ];
+  const dataKeywords = [
+    "data",
+    "fetch",
+    "query",
+    "mutation",
+    "grpc",
+    "service",
+    "api",
+    "store",
+    "state",
+  ];
+  const debugKeywords = [
+    "error",
+    "failed",
+    "failure",
+    "bug",
+    "crash",
+    "timeout",
+    "debug",
+  ];
+
+  let authHints = 0;
+  let permissionHints = 0;
+  let dataHints = 0;
+  let debugHints = 0;
+
+  for (const file of repoIndex.files) {
+    searchableParts.push(file.path);
+    authHints += keywordHits(file.path, authKeywords);
+    permissionHints += keywordHits(file.path, permissionKeywords);
+    dataHints += keywordHits(file.path, dataKeywords);
+    debugHints += keywordHits(file.path, debugKeywords);
+
+    for (const symbol of file.symbols) {
+      searchableParts.push(symbol.name);
+      authHints += keywordHits(symbol.name, authKeywords);
+      permissionHints += keywordHits(symbol.name, permissionKeywords);
+      dataHints += keywordHits(symbol.name, dataKeywords);
+      debugHints += keywordHits(symbol.name, debugKeywords);
+    }
+    for (const name of file.exportedSymbols) {
+      searchableParts.push(name);
+      authHints += keywordHits(name, authKeywords);
+      permissionHints += keywordHits(name, permissionKeywords);
+      dataHints += keywordHits(name, dataKeywords);
+      debugHints += keywordHits(name, debugKeywords);
+    }
+  }
+
+  const serviceSymbols = repoIndex.typeCounts.service ?? 0;
+  const contextSymbols = repoIndex.typeCounts.context ?? 0;
+  const storeSymbols =
+    (repoIndex.typeCounts.store ?? 0) +
+    (repoIndex.typeCounts.store_state ?? 0) +
+    (repoIndex.typeCounts.store_getter ?? 0) +
+    (repoIndex.typeCounts.store_action ?? 0);
+  const hookSymbols = repoIndex.typeCounts.hook ?? 0;
+  const componentSymbols = repoIndex.typeCounts.component ?? 0;
+
+  return {
+    exists: true,
+    fileCount: repoIndex.fileCount,
+    symbolCount: repoIndex.symbolCount,
+    serviceSymbols,
+    contextSymbols,
+    storeSymbols,
+    hookSymbols,
+    componentSymbols,
+    authHints,
+    permissionHints,
+    dataHints,
+    debugHints,
+    searchText: searchableParts.join(" "),
+  };
+}
+
+function keywordHits(input: string, keywords: string[]): number {
+  const normalized = normalizeText(input);
+  return keywords.reduce(
+    (count, keyword) => (normalized.includes(normalizeText(keyword)) ? count + 1 : count),
+    0,
+  );
 }
 
 async function loadArtifactEvidenceForEntries(input: {
@@ -1009,6 +1255,11 @@ function renderDiagramSignal(evidence: EntryArtifactEvidence): string {
   return `${evidence.diagramCount} diagrams, non_empty=${evidence.nonEmptyDiagramCount}, top=${top}`;
 }
 
+function renderRepoSignal(signals: EntryRepoIndexSignals): string {
+  if (!signals.exists) return "repo-index missing";
+  return `files=${signals.fileCount}, symbols=${signals.symbolCount}, service=${signals.serviceSymbols}, context=${signals.contextSymbols}, store=${signals.storeSymbols}, auth_hints=${signals.authHints}, permission_hints=${signals.permissionHints}`;
+}
+
 function renderSnippetValue(snippet: string | undefined, fileExists: boolean): string {
   if (snippet) return snippet;
   return fileExists ? "no matching excerpt" : "file missing";
@@ -1034,6 +1285,7 @@ function computeAnswerConfidence(
     const checks = [
       match.codeExists,
       match.graphStats.exists,
+      match.repoIndexSignals.exists,
       artifact.finalIndexExists,
       artifact.serviceFlowExists,
       artifact.diagramsManifestExists,
@@ -1075,6 +1327,10 @@ function collectArtifactWarnings(
         `${match.entry.workdir}/graph/graph.json`,
       );
       warnings.add(`${label}: missing graph artifact ${toPosixPath(graphPath)}`);
+    }
+    if (!match.repoIndexSignals.exists) {
+      const repoIndexPath = resolvePath(analyzeRepoRootAbs, match.entry.repoIndex);
+      warnings.add(`${label}: missing repo-index artifact ${toPosixPath(repoIndexPath)}`);
     }
     if (!artifact.finalIndexExists) {
       warnings.add(
@@ -1118,6 +1374,24 @@ function emptyArtifactEvidence(finalIndexPath: string): EntryArtifactEvidence {
     diagramCount: 0,
     nonEmptyDiagramCount: 0,
     topDiagrams: [],
+  };
+}
+
+function emptyRepoIndexSignals(): EntryRepoIndexSignals {
+  return {
+    exists: false,
+    fileCount: 0,
+    symbolCount: 0,
+    serviceSymbols: 0,
+    contextSymbols: 0,
+    storeSymbols: 0,
+    hookSymbols: 0,
+    componentSymbols: 0,
+    authHints: 0,
+    permissionHints: 0,
+    dataHints: 0,
+    debugHints: 0,
+    searchText: "",
   };
 }
 

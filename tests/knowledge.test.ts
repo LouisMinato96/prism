@@ -228,7 +228,7 @@ test("knowledge answer auth-flow intent ranking prefers auth services over worke
       baseDir,
       knowledgeRoot: ".prism/knowledge",
       codeRoot: "repo",
-      question: "How does auth flow work?",
+      question: "How does auth service work?",
       outDir: ".prism/knowledge/answers",
       top: 5,
       force: true,
@@ -243,6 +243,28 @@ test("knowledge answer auth-flow intent ranking prefers auth services over worke
     expect(serviceIndex).toBeLessThan(workerIndex);
     expect(content).toContain("## Missing Artifact Warnings");
     expect(content).toContain("missing graph artifact");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer retrieves entry from repo-index auth hints when path lacks auth token", async () => {
+  const baseDir = await createKnowledgeAnswerRepoSignalFixtureProject();
+  try {
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      codeRoot: "repo",
+      question: "How does auth flow work?",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+    const content = await readFile(result.answers[0]!.outputPath, "utf8");
+
+    const alphaIndex = content.indexOf("| svc-alpha |");
+    expect(alphaIndex).toBeGreaterThan(-1);
+    expect(content).toContain("repo_signal:");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -931,6 +953,225 @@ async function createKnowledgeAnswerRankingFixtureProject(): Promise<string> {
     orphanEntryWorkdirs: [],
     docsArtifactLinks: [],
   };
+
+  await writeFile(
+    join(knowledgeRoot, "knowledge-pack.json"),
+    JSON.stringify(pack, null, 2) + "\n",
+  );
+  await writeFile(
+    join(knowledgeRoot, "artifacts-index.json"),
+    JSON.stringify(index, null, 2) + "\n",
+  );
+
+  return baseDir;
+}
+
+async function createKnowledgeAnswerRepoSignalFixtureProject(): Promise<string> {
+  const baseDir = await mkdtemp(join(tmpdir(), "prism-knowledge-repo-signal-"));
+  const knowledgeRoot = join(baseDir, ".prism/knowledge");
+  const repoRoot = join(baseDir, "repo");
+  const analyzeRoot = join(baseDir, ".tmp/analyze");
+  await mkdir(knowledgeRoot, { recursive: true });
+  await mkdir(join(repoRoot, "src/core/services"), { recursive: true });
+  await mkdir(join(analyzeRoot, "svc-alpha/repo-index"), { recursive: true });
+  await mkdir(join(analyzeRoot, "svc-beta/repo-index"), { recursive: true });
+
+  await writeFile(join(repoRoot, "src/core/services/alpha.ts"), "export const a = 1;\n");
+  await writeFile(join(repoRoot, "src/core/services/beta.ts"), "export const b = 1;\n");
+
+  const pack = {
+    schemaVersion: 1,
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    analyzeRoot: ".tmp/analyze",
+    docsRoot: "docs/prism",
+    runs: [],
+    entries: [],
+    domains: [],
+    symbols: [],
+    modules: [],
+    insights: [],
+    docs: [],
+  };
+
+  const makeEntry = (name: string, path: string) => ({
+    name,
+    path,
+    status: "success" as const,
+    workdir: `.tmp/analyze/${name}`,
+    scope: `.tmp/analyze/${name}/scope/scope.json`,
+    symbols: `.tmp/analyze/${name}/symbols/symbols.json`,
+    repoIndex: `.tmp/analyze/${name}/repo-index/repo-index.json`,
+    insights: `.tmp/analyze/${name}/insights/insights.json`,
+    finalIndex: `.tmp/analyze/${name}/final/index.md`,
+    finalReport: `.tmp/analyze/${name}/final/analysis.md`,
+    symbolDirectoryPage: `.tmp/analyze/${name}/final/pages/11-symbol-directory.md`,
+    moduleDirectoryPage: `.tmp/analyze/${name}/final/pages/12-module-directory.md`,
+  });
+
+  const index = {
+    schemaVersion: 1,
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    analyzeRoot: ".tmp/analyze",
+    docsRoot: "docs/prism",
+    outRoot: ".prism/knowledge",
+    multiRunDigest: "abc123def456",
+    runs: [
+      {
+        configDigest: "abc123def456",
+        runRoot: ".tmp/analyze/multi/abc123def456",
+        manifest: ".tmp/analyze/multi/abc123def456/manifest.json",
+        index: ".tmp/analyze/multi/abc123def456/index.md",
+        architecture: ".tmp/analyze/multi/abc123def456/architecture.md",
+        entries: [
+          makeEntry("svc-alpha", "src/core/services/alpha.ts"),
+          makeEntry("svc-beta", "src/core/services/beta.ts"),
+        ],
+      },
+    ],
+    discoveredEntryWorkdirs: [],
+    orphanEntryWorkdirs: [],
+    docsArtifactLinks: [],
+  };
+
+  const repoIndexWithAuthHints = {
+    entry: "src/core/services/alpha.ts",
+    generatedFrom: {
+      scope: "../scope/scope.json",
+      symbols: "../symbols/symbols.json",
+    },
+    fileCount: 2,
+    symbolCount: 3,
+    typeCounts: {
+      component: 0,
+      hook: 0,
+      context: 0,
+      function: 1,
+      constant: 1,
+      store: 0,
+      store_state: 0,
+      store_getter: 0,
+      store_action: 0,
+      class: 0,
+      method: 0,
+      type: 0,
+      service: 1,
+    },
+    files: [
+      {
+        path: "src/core/auth/sessionExchange.ts",
+        symbolCount: 2,
+        exportedSymbolCount: 1,
+        typeCounts: {
+          component: 0,
+          hook: 0,
+          context: 0,
+          function: 1,
+          constant: 0,
+          store: 0,
+          store_state: 0,
+          store_getter: 0,
+          store_action: 0,
+          class: 0,
+          method: 0,
+          type: 0,
+          service: 1,
+        },
+        symbols: [
+          { id: "service:1", type: "service", name: "exchangeAuthToken", line: 1, exported: true },
+          { id: "fn:1", type: "function", name: "readSession", line: 2, exported: false },
+        ],
+        exportedSymbols: ["exchangeAuthToken"],
+      },
+      {
+        path: "src/core/services/alpha.ts",
+        symbolCount: 1,
+        exportedSymbolCount: 1,
+        typeCounts: {
+          component: 0,
+          hook: 0,
+          context: 0,
+          function: 0,
+          constant: 1,
+          store: 0,
+          store_state: 0,
+          store_getter: 0,
+          store_action: 0,
+          class: 0,
+          method: 0,
+          type: 0,
+          service: 0,
+        },
+        symbols: [{ id: "const:1", type: "constant", name: "ALPHA", line: 1, exported: true }],
+        exportedSymbols: ["ALPHA"],
+      },
+    ],
+    entryFileSymbols: [
+      { id: "const:1", type: "constant", name: "ALPHA", line: 1, exported: true },
+    ],
+    entryFileExportedSymbols: ["ALPHA"],
+  };
+
+  const repoIndexNeutral = {
+    entry: "src/core/services/beta.ts",
+    generatedFrom: {
+      scope: "../scope/scope.json",
+      symbols: "../symbols/symbols.json",
+    },
+    fileCount: 1,
+    symbolCount: 1,
+    typeCounts: {
+      component: 0,
+      hook: 0,
+      context: 0,
+      function: 1,
+      constant: 0,
+      store: 0,
+      store_state: 0,
+      store_getter: 0,
+      store_action: 0,
+      class: 0,
+      method: 0,
+      type: 0,
+      service: 0,
+    },
+    files: [
+      {
+        path: "src/core/services/beta.ts",
+        symbolCount: 1,
+        exportedSymbolCount: 1,
+        typeCounts: {
+          component: 0,
+          hook: 0,
+          context: 0,
+          function: 1,
+          constant: 0,
+          store: 0,
+          store_state: 0,
+          store_getter: 0,
+          store_action: 0,
+          class: 0,
+          method: 0,
+          type: 0,
+          service: 0,
+        },
+        symbols: [{ id: "fn:2", type: "function", name: "compute", line: 1, exported: true }],
+        exportedSymbols: ["compute"],
+      },
+    ],
+    entryFileSymbols: [
+      { id: "fn:2", type: "function", name: "compute", line: 1, exported: true },
+    ],
+    entryFileExportedSymbols: ["compute"],
+  };
+
+  await writeFile(
+    join(analyzeRoot, "svc-alpha/repo-index/repo-index.json"),
+    JSON.stringify(repoIndexWithAuthHints, null, 2) + "\n",
+  );
+  await writeFile(
+    join(analyzeRoot, "svc-beta/repo-index/repo-index.json"),
+    JSON.stringify(repoIndexNeutral, null, 2) + "\n",
+  );
 
   await writeFile(
     join(knowledgeRoot, "knowledge-pack.json"),
