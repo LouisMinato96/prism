@@ -3,6 +3,7 @@
 This file is the execution checklist for making `prism knowledge` truly production-usable.
 
 Implementation prep for V1: `docs/knowledge-v1-prep.md`.
+Implementation prep for V2: `docs/knowledge-v2-prep.md`.
 
 ## Outcome Target
 

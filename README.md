@@ -532,4 +532,5 @@ bun test
 - [`docs/analyze-v1.md`](docs/analyze-v1.md): multi-entry orchestration contract.
 - [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): current static-analysis roadmap/status.
 - [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
+- [`docs/knowledge-v2-prep.md`](docs/knowledge-v2-prep.md): V2 implementation-ready hardening plan.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.
