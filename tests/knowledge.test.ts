@@ -13,7 +13,10 @@ import {
   discoverAnalyzeMultiRunRoots,
   runKnowledgeBuild,
 } from "../src/stages/knowledge/build.ts";
-import { runKnowledgeAnswer } from "../src/stages/knowledge/answer.ts";
+import {
+  classifyIntent,
+  runKnowledgeAnswer,
+} from "../src/stages/knowledge/answer.ts";
 
 test("knowledge build discovers multi-run and single-entry analyze artifacts", async () => {
   const baseDir = await createKnowledgeFixtureProject();
@@ -200,6 +203,76 @@ test("knowledge answer options resolver validates mode and defaults", () => {
   ).toThrow("either --question or --questions-file");
 });
 
+test("knowledge answer classifies deterministic intents and precedence", () => {
+  expect(classifyIntent("How does login auth flow work?")).toBe("auth-flow");
+  expect(classifyIntent("Which permission guard blocks this route?")).toBe(
+    "permissions",
+  );
+  expect(classifyIntent("Why does this request fail with timeout error?")).toBe(
+    "failure-debug",
+  );
+  expect(classifyIntent("Show data flow for grpc service fetch")).toBe("data-flow");
+  expect(classifyIntent("summarize project architecture")).toBe("general");
+
+  // Precedence: auth-flow > permissions > failure-debug > data-flow
+  expect(classifyIntent("auth permission failed data flow")).toBe("auth-flow");
+  expect(classifyIntent("permission failed data flow")).toBe("permissions");
+  expect(classifyIntent("failed data flow")).toBe("failure-debug");
+});
+
+test("knowledge answer auth-flow intent ranking prefers auth services over workers", async () => {
+  const baseDir = await createKnowledgeAnswerRankingFixtureProject();
+  try {
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      codeRoot: "repo",
+      question: "How does auth flow work?",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+    const answerPath = result.answers[0]!.outputPath;
+    const content = await readFile(answerPath, "utf8");
+
+    const serviceIndex = content.indexOf("| svc-auth |");
+    const workerIndex = content.indexOf("| auth-worker |");
+    expect(serviceIndex).toBeGreaterThan(-1);
+    expect(workerIndex).toBeGreaterThan(-1);
+    expect(serviceIndex).toBeLessThan(workerIndex);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer dedupes repeated insights into grouped evidence rows", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "service debug",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+
+    const content = await readFile(result.answers[0]!.outputPath, "utf8");
+    expect(content).toContain("occurrences: 2");
+    expect(content).toContain("ids: layer-leak-1, layer-leak-2");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge answer writes deterministic evidence file for a single question", async () => {
   const baseDir = await createKnowledgeFixtureProject();
   try {
@@ -226,8 +299,10 @@ test("knowledge answer writes deterministic evidence file for a single question"
     const content = await readFile(answerPath, "utf8");
     expect(content).toContain("# Prism Knowledge Answer");
     expect(content).toContain("How app page works");
+    expect(content).toContain("- intent:");
     expect(content).toContain("- code root:");
     expect(content).toContain("code_file:");
+    expect(content).toContain("flow_signal:");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
   } finally {
@@ -570,6 +645,18 @@ async function createKnowledgeFixtureProject(): Promise<string> {
             explanation: "example",
             suggestion: "example",
           },
+          {
+            id: "layer-leak-2",
+            severity: "medium",
+            lens: "layering",
+            title: "Component calls service directly",
+            evidence: [
+              { from: "component:Dashboard", to: "service:fetchMetrics" },
+              { from: "component:Widget", to: "service:fetchMetrics" },
+            ],
+            explanation: "example",
+            suggestion: "example",
+          },
         ],
       },
       null,
@@ -686,6 +773,86 @@ async function createKnowledgeFixtureProject(): Promise<string> {
       "- [Missing artifact](../../.tmp/analyze/not-found/final/index.md)",
       "",
     ].join("\n"),
+  );
+
+  return baseDir;
+}
+
+async function createKnowledgeAnswerRankingFixtureProject(): Promise<string> {
+  const baseDir = await mkdtemp(join(tmpdir(), "prism-knowledge-ranking-"));
+  const knowledgeRoot = join(baseDir, ".prism/knowledge");
+  const repoRoot = join(baseDir, "repo");
+  await mkdir(knowledgeRoot, { recursive: true });
+  await mkdir(join(repoRoot, "src/core/apolloClient/services"), { recursive: true });
+  await mkdir(join(repoRoot, "src/workers"), { recursive: true });
+
+  await writeFile(
+    join(repoRoot, "src/core/apolloClient/services/auth-service.ts"),
+    "export const auth = 1;\n",
+  );
+  await writeFile(join(repoRoot, "src/workers/authWorker.ts"), "export const w = 1;\n");
+
+  const pack = {
+    schemaVersion: 1,
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    analyzeRoot: ".tmp/analyze",
+    docsRoot: "docs/prism",
+    runs: [],
+    entries: [],
+    domains: [],
+    symbols: [],
+    modules: [],
+    insights: [],
+    docs: [],
+  };
+
+  const makeEntry = (name: string, path: string) => ({
+    name,
+    path,
+    status: "success" as const,
+    workdir: `.tmp/analyze/${name}`,
+    scope: `.tmp/analyze/${name}/scope/scope.json`,
+    symbols: `.tmp/analyze/${name}/symbols/symbols.json`,
+    repoIndex: `.tmp/analyze/${name}/repo-index/repo-index.json`,
+    insights: `.tmp/analyze/${name}/insights/insights.json`,
+    finalIndex: `.tmp/analyze/${name}/final/index.md`,
+    finalReport: `.tmp/analyze/${name}/final/analysis.md`,
+    symbolDirectoryPage: `.tmp/analyze/${name}/final/pages/11-symbol-directory.md`,
+    moduleDirectoryPage: `.tmp/analyze/${name}/final/pages/12-module-directory.md`,
+  });
+
+  const index = {
+    schemaVersion: 1,
+    generatedAt: "2026-05-21T00:00:00.000Z",
+    analyzeRoot: ".tmp/analyze",
+    docsRoot: "docs/prism",
+    outRoot: ".prism/knowledge",
+    multiRunDigest: "abc123def456",
+    runs: [
+      {
+        configDigest: "abc123def456",
+        runRoot: ".tmp/analyze/multi/abc123def456",
+        manifest: ".tmp/analyze/multi/abc123def456/manifest.json",
+        index: ".tmp/analyze/multi/abc123def456/index.md",
+        architecture: ".tmp/analyze/multi/abc123def456/architecture.md",
+        entries: [
+          makeEntry("svc-auth", "src/core/apolloClient/services/auth-service.ts"),
+          makeEntry("auth-worker", "src/workers/authWorker.ts"),
+        ],
+      },
+    ],
+    discoveredEntryWorkdirs: [],
+    orphanEntryWorkdirs: [],
+    docsArtifactLinks: [],
+  };
+
+  await writeFile(
+    join(knowledgeRoot, "knowledge-pack.json"),
+    JSON.stringify(pack, null, 2) + "\n",
+  );
+  await writeFile(
+    join(knowledgeRoot, "artifacts-index.json"),
+    JSON.stringify(index, null, 2) + "\n",
   );
 
   return baseDir;

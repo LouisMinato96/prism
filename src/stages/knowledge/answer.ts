@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, normalize } from "node:path";
 import { log } from "../../lib/log.ts";
 import {
+  AnalyzeGraphSchema,
   ArtifactsIndexSchema,
   KnowledgePackSchema,
   KnowledgeQuestionsFileSchema,
@@ -16,6 +17,13 @@ import {
 
 const KNOWLEDGE_PACK_FILE = "knowledge-pack.json";
 const ARTIFACTS_INDEX_FILE = "artifacts-index.json";
+
+export type KnowledgeAnswerIntent =
+  | "auth-flow"
+  | "permissions"
+  | "data-flow"
+  | "failure-debug"
+  | "general";
 
 const STOP_WORDS = new Set([
   "a",
@@ -48,6 +56,62 @@ const STOP_WORDS = new Set([
   "works",
   "system",
 ]);
+
+const INTENT_KEYWORDS: Record<Exclude<KnowledgeAnswerIntent, "general">, string[]> = {
+  "auth-flow": [
+    "auth",
+    "oauth",
+    "sso",
+    "login",
+    "logout",
+    "session",
+    "token",
+    "impersonat",
+    "firewall",
+  ],
+  permissions: [
+    "permission",
+    "role",
+    "access",
+    "guard",
+    "rbac",
+    "acl",
+    "denied",
+    "allow",
+    "restrict",
+  ],
+  "data-flow": [
+    "data",
+    "flow",
+    "fetch",
+    "query",
+    "mutation",
+    "grpc",
+    "service",
+    "api",
+    "state",
+    "store",
+  ],
+  "failure-debug": [
+    "error",
+    "failed",
+    "failure",
+    "bug",
+    "crash",
+    "issue",
+    "timeout",
+    "exception",
+    "debug",
+    "broken",
+  ],
+};
+
+interface QueryProfile {
+  question: string;
+  intent: KnowledgeAnswerIntent;
+  tokens: string[];
+  matchedIntentKeywords: string[];
+}
 
 export interface KnowledgeAnswerOptions {
   baseDir?: string;
@@ -83,6 +147,7 @@ interface EntryMatch {
   entry: ArtifactIndexEntry;
   codePath: string;
   codeExists: boolean;
+  graphStats: EntryGraphStats;
   score: number;
   matchedTokens: string[];
 }
@@ -91,6 +156,19 @@ interface InsightMatch {
   insight: KnowledgeInsightSummary;
   score: number;
   matchedTokens: string[];
+  occurrences: number;
+  aggregatedEvidenceCount: number;
+  groupedIds: string[];
+}
+
+interface EntryGraphStats {
+  exists: boolean;
+  edgeCount: number;
+  calls: number;
+  serviceCalls: number;
+  routes: number;
+  contextEdges: number;
+  storeEdges: number;
 }
 
 export async function runKnowledgeAnswer(
@@ -116,6 +194,11 @@ export async function runKnowledgeAnswer(
 
   const loaded = await loadKnowledge(knowledgeRootAbs);
   const codeRootAbs = resolveCodeRoot(baseDir, loaded.pack.analyzeRoot, options.codeRoot);
+  const graphStatsByEntry = await loadGraphStatsForArtifacts({
+    baseDir,
+    analyzeRootFromPack: loaded.pack.analyzeRoot,
+    artifactsIndex: loaded.index,
+  });
   const questions = await loadQuestions({
     baseDir,
     question: options.question,
@@ -145,6 +228,7 @@ export async function runKnowledgeAnswer(
       pack: loaded.pack,
       index: loaded.index,
       codeRootAbs,
+      graphStatsByEntry,
     });
     await writeTextIfChanged(outputAbs, content, force);
     answers.push({
@@ -231,18 +315,20 @@ function renderAnswer(input: {
   pack: KnowledgePack;
   index: ArtifactsIndex;
   codeRootAbs: string;
+  graphStatsByEntry: Map<string, EntryGraphStats>;
 }): string {
-  const tokens = tokenize(input.question);
+  const query = buildQueryProfile(input.question);
   const entryMatches = rankEntryMatches(
-    input.question,
-    tokens,
+    query,
     input.index,
     input.codeRootAbs,
+    input.graphStatsByEntry,
   ).slice(0, input.top);
-  const insightMatches = rankInsightMatches(input.question, tokens, input.pack).slice(
-    0,
-    input.top,
-  );
+  const insightMatches = rankInsightMatches(
+    input.question,
+    query.tokens,
+    input.pack,
+  ).slice(0, input.top);
 
   const questionDigest = createHash("sha1")
     .update(input.question)
@@ -254,6 +340,10 @@ function renderAnswer(input: {
   lines.push("");
   lines.push(`- question: ${input.question}`);
   lines.push(`- question digest: ${questionDigest}`);
+  lines.push(`- intent: ${query.intent}`);
+  if (query.matchedIntentKeywords.length > 0) {
+    lines.push(`- intent keywords: ${query.matchedIntentKeywords.join(", ")}`);
+  }
   lines.push(`- generated at: ${input.generatedAt}`);
   lines.push(`- knowledge root: \`${input.knowledgeRoot}\``);
   lines.push(`- code root: \`${input.codeRoot}\``);
@@ -262,7 +352,9 @@ function renderAnswer(input: {
   lines.push("");
   lines.push("## Answer");
   lines.push("");
-  lines.push(buildSummaryParagraph(input.question, tokens, entryMatches, insightMatches));
+  lines.push(
+    buildSummaryParagraph(input.question, query.tokens, entryMatches, insightMatches),
+  );
   lines.push("");
   lines.push("## Evidence Entries");
   lines.push("");
@@ -282,6 +374,9 @@ function renderAnswer(input: {
       lines.push(
         `  - code_file: \`${match.codePath}\` (${match.codeExists ? "exists" : "missing"})`,
       );
+      lines.push(
+        `  - flow_signal: edges=${match.graphStats.edgeCount}, calls=${match.graphStats.calls}, service_calls=${match.graphStats.serviceCalls}, routes=${match.graphStats.routes}, context=${match.graphStats.contextEdges}, store=${match.graphStats.storeEdges}`,
+      );
       if (match.matchedTokens.length > 0) {
         lines.push(`  - matched tokens: ${match.matchedTokens.join(", ")}`);
       }
@@ -298,7 +393,7 @@ function renderAnswer(input: {
         `- score ${match.score} | ${match.insight.severity} | ${match.insight.entry} | ${match.insight.title}`,
       );
       lines.push(
-        `  - lens: ${match.insight.lens}, evidence count: ${match.insight.evidenceCount}, id: ${match.insight.id}`,
+        `  - lens: ${match.insight.lens}, occurrences: ${match.occurrences}, evidence count: ${match.aggregatedEvidenceCount}, ids: ${match.groupedIds.join(", ")}`,
       );
       if (match.matchedTokens.length > 0) {
         lines.push(`  - matched tokens: ${match.matchedTokens.join(", ")}`);
@@ -347,35 +442,47 @@ function buildSummaryParagraph(
 }
 
 function rankEntryMatches(
-  question: string,
-  tokens: string[],
+  query: QueryProfile,
   artifactsIndex: ArtifactsIndex,
   codeRootAbs: string,
+  graphStatsByEntry: Map<string, EntryGraphStats>,
 ): EntryMatch[] {
-  const normalizedQuestion = normalizeText(question);
+  const normalizedQuestion = normalizeText(query.question);
   const matches: EntryMatch[] = [];
 
   for (const run of artifactsIndex.runs) {
     for (const entry of run.entries) {
       const haystack = normalizeText(`${entry.name} ${entry.path}`);
-      const tokenMatches = tokens.filter((token) => haystack.includes(token));
+      const tokenMatches = query.tokens.filter((token) => haystack.includes(token));
       const codePath = resolvePath(codeRootAbs, entry.path);
       const codeExists = existsSync(codePath);
+      const graphStats =
+        graphStatsByEntry.get(entryRunKey(run.configDigest, entry)) ?? emptyGraphStats();
       let score = tokenMatches.length * 10;
       if (tokenMatches.length > 0 && entry.status === "success") score += 3;
       if (tokenMatches.length > 0 && codeExists) score += 2;
+      if (tokenMatches.length > 0 && graphStats.exists) score += 2;
       if (
         tokenMatches.length > 0 &&
         normalizedQuestion.includes(normalizeText(entry.name))
       ) {
         score += 5;
       }
+      score += scoreIntentBoost(
+        query.intent,
+        entry,
+        haystack,
+        tokenMatches,
+        normalizedQuestion,
+      );
+      score += scoreGraphSignalBoost(query.intent, graphStats);
       if (score <= 0) continue;
       matches.push({
         run,
         entry,
         codePath,
         codeExists,
+        graphStats,
         score,
         matchedTokens: tokenMatches,
       });
@@ -385,6 +492,8 @@ function rankEntryMatches(
   return matches.sort(
     (a, b) =>
       b.score - a.score ||
+      Number(a.entry.path.includes("/workers/")) -
+        Number(b.entry.path.includes("/workers/")) ||
       a.entry.path.localeCompare(b.entry.path) ||
       a.run.configDigest.localeCompare(b.run.configDigest),
   );
@@ -415,15 +524,38 @@ function rankInsightMatches(
       insight,
       score,
       matchedTokens: tokenMatches,
+      occurrences: 1,
+      aggregatedEvidenceCount: insight.evidenceCount,
+      groupedIds: [insight.id],
     });
   }
 
-  return matches.sort(
+  return dedupeInsightMatches(matches).sort(
     (a, b) =>
       b.score - a.score ||
       a.insight.entry.localeCompare(b.insight.entry) ||
       a.insight.id.localeCompare(b.insight.id),
   );
+}
+
+function dedupeInsightMatches(matches: InsightMatch[]): InsightMatch[] {
+  const grouped = new Map<string, InsightMatch>();
+  for (const match of matches) {
+    const key = `${match.insight.entry}|${match.insight.lens}|${match.insight.title}|${match.insight.severity}`;
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...match });
+      continue;
+    }
+    current.occurrences += 1;
+    current.aggregatedEvidenceCount += match.insight.evidenceCount;
+    current.groupedIds = [...new Set([...current.groupedIds, match.insight.id])];
+    current.matchedTokens = [
+      ...new Set([...current.matchedTokens, ...match.matchedTokens]),
+    ];
+    current.score = Math.max(current.score, match.score) + 1;
+  }
+  return [...grouped.values()];
 }
 
 function tokenize(input: string): string[] {
@@ -433,6 +565,236 @@ function tokenize(input: string): string[] {
     .filter((word) => word.length >= 2)
     .filter((word) => !STOP_WORDS.has(word));
   return [...new Set(words)];
+}
+
+export function classifyIntent(question: string): KnowledgeAnswerIntent {
+  const normalized = normalizeText(question);
+  if (normalized.length === 0) return "general";
+
+  // Priority matters for ambiguous prompts.
+  const orderedIntents: Array<Exclude<KnowledgeAnswerIntent, "general">> = [
+    "auth-flow",
+    "permissions",
+    "failure-debug",
+    "data-flow",
+  ];
+  for (const intent of orderedIntents) {
+    const matches = INTENT_KEYWORDS[intent].some((keyword) =>
+      normalized.includes(keyword),
+    );
+    if (matches) return intent;
+  }
+  return "general";
+}
+
+function buildQueryProfile(question: string): QueryProfile {
+  const intent = classifyIntent(question);
+  const baseTokens = tokenize(question);
+  const keywords = intent === "general" ? [] : INTENT_KEYWORDS[intent];
+  const matchedIntentKeywords = keywords.filter((keyword) =>
+    normalizeText(question).includes(keyword),
+  );
+  const tokens = [...new Set([...baseTokens, ...matchedIntentKeywords])];
+  return {
+    question,
+    intent,
+    tokens,
+    matchedIntentKeywords,
+  };
+}
+
+function scoreIntentBoost(
+  intent: KnowledgeAnswerIntent,
+  entry: ArtifactIndexEntry,
+  haystack: string,
+  tokenMatches: string[],
+  normalizedQuestion: string,
+): number {
+  if (tokenMatches.length === 0) return 0;
+
+  const path = normalizeText(entry.path);
+  let score = 0;
+
+  if (intent === "auth-flow") {
+    if (
+      containsAny(haystack, [
+        "auth",
+        "oauth",
+        "sso",
+        "login",
+        "logout",
+        "session",
+        "token",
+      ])
+    ) {
+      score += 10;
+    }
+    if (containsAny(haystack, ["svc-auth", "auth-service"])) score += 8;
+    if (containsAny(path, ["/services/", "service"])) score += 6;
+    if (containsAny(haystack, ["firewall", "permission"])) score += 4;
+    if (containsAny(path, ["/workers/", ".worker", "worker"])) score -= 6;
+  } else if (intent === "permissions") {
+    if (
+      containsAny(haystack, [
+        "permission",
+        "role",
+        "access",
+        "guard",
+        "denied",
+        "firewall",
+      ])
+    ) {
+      score += 10;
+    }
+    if (containsAny(path, ["/context/", "/components/"])) score += 3;
+    if (containsAny(path, ["/workers/"])) score -= 3;
+  } else if (intent === "data-flow") {
+    if (
+      containsAny(haystack, ["data", "fetch", "query", "mutation", "grpc", "service"])
+    ) {
+      score += 8;
+    }
+    if (containsAny(path, ["/services/", "/core/"])) score += 5;
+    if (containsAny(haystack, ["store", "zustand"])) score += 4;
+  } else if (intent === "failure-debug") {
+    if (entry.status === "failed") score += 10;
+    if (containsAny(haystack, ["error", "failed", "exception", "timeout", "debug"]))
+      score += 8;
+    if (containsAny(path, ["/workers/"])) score += 3;
+  }
+
+  if (normalizedQuestion.includes(normalizeText(entry.path))) score += 3;
+  return score;
+}
+
+function containsAny(haystack: string, values: string[]): boolean {
+  return values.some((value) => haystack.includes(normalizeText(value)));
+}
+
+function scoreGraphSignalBoost(
+  intent: KnowledgeAnswerIntent,
+  graphStats: EntryGraphStats,
+): number {
+  if (!graphStats.exists || graphStats.edgeCount === 0) return 0;
+
+  if (intent === "auth-flow") {
+    return Math.min(8, graphStats.serviceCalls * 2 + graphStats.calls);
+  }
+  if (intent === "permissions") {
+    return Math.min(8, graphStats.contextEdges * 2 + graphStats.routes);
+  }
+  if (intent === "data-flow") {
+    return Math.min(8, graphStats.calls + graphStats.serviceCalls + graphStats.routes);
+  }
+  if (intent === "failure-debug") {
+    return Math.min(6, Math.floor(graphStats.edgeCount / 4));
+  }
+  return Math.min(4, Math.floor(graphStats.edgeCount / 6));
+}
+
+async function loadGraphStatsForArtifacts(input: {
+  baseDir: string;
+  analyzeRootFromPack: string;
+  artifactsIndex: ArtifactsIndex;
+}): Promise<Map<string, EntryGraphStats>> {
+  const statsByEntry = new Map<string, EntryGraphStats>();
+  const analyzeRepoRootAbs = resolveAnalyzeRepoRoot(
+    input.baseDir,
+    input.analyzeRootFromPack,
+  );
+
+  for (const run of input.artifactsIndex.runs) {
+    for (const entry of run.entries) {
+      const graphPath = resolvePath(
+        analyzeRepoRootAbs,
+        `${entry.workdir}/graph/graph.json`,
+      );
+      const stats = await loadEntryGraphStats(graphPath);
+      statsByEntry.set(entryRunKey(run.configDigest, entry), stats);
+    }
+  }
+
+  return statsByEntry;
+}
+
+async function loadEntryGraphStats(graphPath: string): Promise<EntryGraphStats> {
+  if (!existsSync(graphPath)) return emptyGraphStats();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(graphPath, "utf8"));
+  } catch {
+    return emptyGraphStats();
+  }
+  const parsed = AnalyzeGraphSchema.safeParse(raw);
+  if (!parsed.success) return emptyGraphStats();
+  return summarizeGraph(parsed.data);
+}
+
+function summarizeGraph(graph: {
+  nodes: Array<{ id: string; type: string }>;
+  edges: Array<{ type: string; to: string }>;
+}): EntryGraphStats {
+  const nodeTypeById = new Map(graph.nodes.map((node) => [node.id, node.type]));
+  let calls = 0;
+  let serviceCalls = 0;
+  let routes = 0;
+  let contextEdges = 0;
+  let storeEdges = 0;
+
+  for (const edge of graph.edges) {
+    if (edge.type === "calls") calls += 1;
+    if (edge.type === "routes_to" || edge.type === "fallback_routes_to") routes += 1;
+    if (edge.type === "uses_context" || edge.type === "provides_context")
+      contextEdges += 1;
+    if (
+      edge.type === "uses_store" ||
+      edge.type === "reads_store" ||
+      edge.type === "writes_store" ||
+      edge.type === "invokes_store_action"
+    ) {
+      storeEdges += 1;
+    }
+    if (edge.type === "calls" && nodeTypeById.get(edge.to) === "service") {
+      serviceCalls += 1;
+    }
+  }
+
+  return {
+    exists: true,
+    edgeCount: graph.edges.length,
+    calls,
+    serviceCalls,
+    routes,
+    contextEdges,
+    storeEdges,
+  };
+}
+
+function resolveAnalyzeRepoRoot(baseDir: string, analyzeRootFromPack: string): string {
+  const analyzeRootAbs = resolvePath(baseDir, analyzeRootFromPack);
+  if (
+    basename(analyzeRootAbs) === "analyze" &&
+    basename(dirname(analyzeRootAbs)) === ".tmp"
+  ) {
+    return dirname(dirname(analyzeRootAbs));
+  }
+  return baseDir;
+}
+
+function entryRunKey(runDigest: string, entry: ArtifactIndexEntry): string {
+  return `${runDigest}::${entry.name}::${entry.path}`;
+}
+
+function emptyGraphStats(): EntryGraphStats {
+  return {
+    exists: false,
+    edgeCount: 0,
+    calls: 0,
+    serviceCalls: 0,
+    routes: 0,
+    contextEdges: 0,
+    storeEdges: 0,
+  };
 }
 
 function normalizeText(input: string): string {

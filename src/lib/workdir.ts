@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { config } from "../config.ts";
@@ -41,7 +42,10 @@ export class Workdir {
     join(this.tasks(), `${this.safe(file)}.${reviewer}.status`);
 
   private safe(file: string): string {
-    return file.replace(/[\/\\]/g, "__");
+    const normalized = file.replace(/[\/\\]/g, "__");
+    if (normalized.length <= 160) return normalized;
+    const hash = createHash("sha1").update(file).digest("hex").slice(0, 8);
+    return `${normalized.slice(0, 140)}__${hash}`;
   }
 
   async ensureAll(): Promise<void> {
