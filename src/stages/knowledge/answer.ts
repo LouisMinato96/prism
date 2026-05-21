@@ -125,6 +125,8 @@ export interface KnowledgeAnswerOptions {
   outDir?: string;
   top?: number;
   emitJson?: boolean;
+  strict?: boolean;
+  minConfidence?: "low" | "medium" | "high";
   force?: boolean;
 }
 
@@ -137,6 +139,12 @@ export interface KnowledgeAnswerResult {
     jsonOutputPath?: string;
   }>;
   indexPath?: string;
+  strict: {
+    enabled: boolean;
+    minConfidence: "low" | "medium" | "high";
+    failed: boolean;
+    failures: string[];
+  };
 }
 
 interface KnowledgeAnswerJson {
@@ -266,6 +274,15 @@ interface EntryArtifactEvidence {
   topDiagrams: Array<{ name: string; edgeCount: number }>;
 }
 
+interface StrictEvaluation {
+  question: string;
+  confidence: {
+    level: "low" | "medium" | "high";
+    score: number;
+  };
+  missingCriticalArtifacts: string[];
+}
+
 export async function runKnowledgeAnswer(
   options: KnowledgeAnswerOptions,
 ): Promise<KnowledgeAnswerResult> {
@@ -275,6 +292,8 @@ export async function runKnowledgeAnswer(
   const outDirInput = options.outDir ?? ".prism/knowledge/answers";
   const top = options.top ?? 8;
   const emitJson = options.emitJson === true;
+  const strict = options.strict === true;
+  const minConfidence = options.minConfidence ?? "medium";
   const force = options.force === true;
 
   if (!options.question && !options.questionsFile) {
@@ -316,6 +335,7 @@ export async function runKnowledgeAnswer(
     outputPath: string;
     jsonOutputPath?: string;
   }> = [];
+  const strictEvaluations: StrictEvaluation[] = [];
 
   for (const [index, question] of questions.entries()) {
     const outputAbs =
@@ -351,6 +371,7 @@ export async function runKnowledgeAnswer(
       outputPath: outputAbs,
       jsonOutputPath,
     });
+    strictEvaluations.push(rendered.strictEvaluation);
     usedOutputNames.add(outputAbs);
   }
 
@@ -374,11 +395,20 @@ export async function runKnowledgeAnswer(
     indexPath = batchIndexAbs;
   }
 
+  const strictFailures =
+    strict === true ? evaluateStrictFailures(strictEvaluations, minConfidence) : [];
+
   return {
     knowledgeRoot: knowledgeRootAbs,
     codeRoot: codeRootAbs,
     answers,
     indexPath,
+    strict: {
+      enabled: strict,
+      minConfidence,
+      failed: strictFailures.length > 0,
+      failures: strictFailures,
+    },
   };
 }
 
@@ -434,7 +464,11 @@ async function renderAnswer(input: {
   analyzeRepoRootAbs: string;
   graphStatsByEntry: Map<string, EntryGraphStats>;
   repoIndexSignalsByEntry: Map<string, EntryRepoIndexSignals>;
-}): Promise<{ markdown: string; json: KnowledgeAnswerJson }> {
+}): Promise<{
+  markdown: string;
+  json: KnowledgeAnswerJson;
+  strictEvaluation: StrictEvaluation;
+}> {
   const query = buildQueryProfile(input.question);
   const entryMatches = rankEntryMatches(
     query,
@@ -640,6 +674,14 @@ async function renderAnswer(input: {
   return {
     markdown: `${lines.join("\n")}\n`,
     json,
+    strictEvaluation: {
+      question: input.question,
+      confidence,
+      missingCriticalArtifacts: collectCriticalArtifactGaps(
+        entryMatches,
+        artifactEvidenceByEntry,
+      ),
+    },
   };
 }
 
@@ -1305,6 +1347,50 @@ function computeAnswerConfidence(
     score,
     level: score >= 75 ? "high" : score >= 45 ? "medium" : "low",
   };
+}
+
+function collectCriticalArtifactGaps(
+  entryMatches: EntryMatch[],
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>,
+): string[] {
+  const gaps = new Set<string>();
+  for (const match of entryMatches) {
+    const artifact =
+      artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+      emptyArtifactEvidence(match.entry.finalIndex);
+    const label = `${match.run.configDigest}/${match.entry.name}`;
+    if (!match.codeExists) gaps.add(`${label}: missing code file`);
+    if (!match.graphStats.exists) gaps.add(`${label}: missing graph`);
+    if (!match.repoIndexSignals.exists) gaps.add(`${label}: missing repo-index`);
+    if (!artifact.finalIndexExists) gaps.add(`${label}: missing final index`);
+    if (!artifact.serviceFlowExists) gaps.add(`${label}: missing service-flow page`);
+  }
+  return [...gaps].sort((a, b) => a.localeCompare(b));
+}
+
+function evaluateStrictFailures(
+  evaluations: StrictEvaluation[],
+  minConfidence: "low" | "medium" | "high",
+): string[] {
+  const failures: string[] = [];
+  const minRank = confidenceRank(minConfidence);
+  for (const evaluation of evaluations) {
+    if (confidenceRank(evaluation.confidence.level) < minRank) {
+      failures.push(
+        `${evaluation.question}: confidence ${evaluation.confidence.level} (${evaluation.confidence.score}/100) below required ${minConfidence}`,
+      );
+    }
+    for (const gap of evaluation.missingCriticalArtifacts) {
+      failures.push(`${evaluation.question}: ${gap}`);
+    }
+  }
+  return failures;
+}
+
+function confidenceRank(level: "low" | "medium" | "high"): number {
+  if (level === "high") return 3;
+  if (level === "medium") return 2;
+  return 1;
 }
 
 function collectArtifactWarnings(

@@ -194,6 +194,8 @@ test("knowledge answer options resolver validates mode and defaults", () => {
     outDir: ".prism/knowledge/answers",
     top: 8,
     emitJson: false,
+    strict: false,
+    minConfidence: undefined,
   });
 
   expect(() =>
@@ -202,6 +204,21 @@ test("knowledge answer options resolver validates mode and defaults", () => {
       "questions-file": ".tmp/questions.json",
     }),
   ).toThrow("either --question or --questions-file");
+
+  expect(() =>
+    resolveKnowledgeAnswerOptions({
+      question: "x",
+      "min-confidence": "medium",
+    }),
+  ).toThrow("--min-confidence requires --strict");
+
+  expect(() =>
+    resolveKnowledgeAnswerOptions({
+      question: "x",
+      strict: true,
+      "min-confidence": "bad",
+    }),
+  ).toThrow("invalid --min-confidence value");
 });
 
 test("knowledge answer classifies deterministic intents and precedence", () => {
@@ -385,6 +402,30 @@ test("knowledge answer emits deterministic json when requested", async () => {
   }
 });
 
+test("knowledge answer strict mode reports failures after writing outputs", async () => {
+  const baseDir = await createKnowledgeAnswerRankingFixtureProject();
+  try {
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      codeRoot: "repo",
+      question: "How does auth flow work?",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      strict: true,
+      minConfidence: "high",
+      force: true,
+    });
+    expect(result.answers).toHaveLength(1);
+    expect(existsSync(result.answers[0]!.outputPath)).toBe(true);
+    expect(result.strict.enabled).toBe(true);
+    expect(result.strict.failed).toBe(true);
+    expect(result.strict.failures.length).toBeGreaterThan(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge answer supports questions file and writes batch index", async () => {
   const baseDir = await createKnowledgeFixtureProject();
   try {
@@ -556,6 +597,45 @@ test("knowledge cli writes answer output from --question", async () => {
     const answerJsonPath = join(baseDir, ".prism/knowledge/answers/how-auth-works.json");
     expect(existsSync(answerPath)).toBe(true);
     expect(existsSync(answerJsonPath)).toBe(true);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge cli strict mode exits non-zero after writing answer files", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    const build = Bun.spawnSync({
+      cmd: ["bun", cliPath, "knowledge", "build", "--force"],
+      cwd: baseDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(build.exitCode).toBe(0);
+
+    const strictAnswer = Bun.spawnSync({
+      cmd: [
+        "bun",
+        cliPath,
+        "knowledge",
+        "answer",
+        "--question",
+        "How app page works",
+        "--out-dir",
+        ".prism/knowledge/answers",
+        "--strict",
+        "--min-confidence",
+        "high",
+        "--force",
+      ],
+      cwd: baseDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(strictAnswer.exitCode).toBe(1);
+    const answerPath = join(baseDir, ".prism/knowledge/answers/how-app-page-works.md");
+    expect(existsSync(answerPath)).toBe(true);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

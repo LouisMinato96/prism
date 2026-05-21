@@ -59,6 +59,8 @@ OPTIONS:
   --out-dir <path>      Knowledge answer command: output directory (default: .prism/knowledge/answers)
   --top <n>             Knowledge answer command: max evidence rows per section (default: 8)
   --emit-json           Knowledge answer command: also emit machine-readable JSON sidecar(s)
+  --strict              Knowledge answer command: fail with non-zero exit when confidence/artifact checks fail
+  --min-confidence <low|medium|high> Knowledge answer strict mode: minimum required confidence
   --help               Show this message
 
 ENV VARS:
@@ -95,6 +97,8 @@ async function main() {
       "out-dir": { type: "string" },
       top: { type: "string" },
       "emit-json": { type: "boolean", default: false },
+      strict: { type: "boolean", default: false },
+      "min-confidence": { type: "string" },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -140,6 +144,8 @@ async function main() {
           "out-dir": values["out-dir"] as string | undefined,
           top: values.top as string | undefined,
           "emit-json": values["emit-json"] === true,
+          strict: values.strict === true,
+          "min-confidence": values["min-confidence"] as string | undefined,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -156,6 +162,8 @@ async function main() {
         outDir: answerOptions.outDir,
         top: answerOptions.top,
         emitJson: answerOptions.emitJson,
+        strict: answerOptions.strict,
+        minConfidence: answerOptions.minConfidence,
         force,
       });
       for (const answer of result.answers) {
@@ -166,6 +174,16 @@ async function main() {
       }
       if (result.indexPath) {
         log.done(result.indexPath, "answers-index");
+      }
+      if (result.strict.failed) {
+        log.error(
+          `strict mode failed with ${result.strict.failures.length} issue(s); minimum confidence: ${result.strict.minConfidence}`,
+          "knowledge:strict",
+        );
+        for (const failure of result.strict.failures) {
+          log.error(failure, "knowledge:strict");
+        }
+        process.exit(1);
       }
       return;
     }

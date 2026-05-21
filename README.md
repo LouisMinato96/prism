@@ -413,6 +413,15 @@ prism knowledge answer \
   --knowledge-root .prism/knowledge \
   --code-root /absolute/path/to/target-repo \
   --out-dir .prism/knowledge/answers
+
+# Strict mode (fails non-zero after writing files if checks fail)
+prism knowledge answer \
+  --question "How does auth work?" \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers \
+  --strict \
+  --min-confidence high
 ```
 
 Batch questions:
@@ -487,6 +496,8 @@ Options:
   --out-dir <path>      Knowledge answer command: answers output directory
   --top <n>             Knowledge answer command: max evidence rows per section
   --emit-json           Knowledge answer command: also emit JSON sidecar(s)
+  --strict              Knowledge answer command: fail non-zero when confidence/artifact checks fail
+  --min-confidence <low|medium|high> Knowledge answer strict mode: minimum confidence gate
 ```
 
 ## Environment

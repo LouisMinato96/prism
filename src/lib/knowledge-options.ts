@@ -13,6 +13,8 @@ export interface ResolvedKnowledgeAnswerOptions {
   outDir: string;
   top: number;
   emitJson: boolean;
+  strict: boolean;
+  minConfidence?: "low" | "medium" | "high";
 }
 
 export function resolveKnowledgeBuildOptions(values: {
@@ -36,6 +38,8 @@ export function resolveKnowledgeAnswerOptions(values: {
   "out-dir"?: string;
   top?: string;
   "emit-json"?: boolean;
+  strict?: boolean;
+  "min-confidence"?: string;
 }): ResolvedKnowledgeAnswerOptions {
   const knowledgeRoot = cleanOption(values["knowledge-root"], ".prism/knowledge");
   const codeRoot = cleanOptional(values["code-root"]);
@@ -46,6 +50,8 @@ export function resolveKnowledgeAnswerOptions(values: {
   const topRaw = cleanOptional(values.top);
   const top = topRaw === undefined ? 8 : Number(topRaw);
   const emitJson = values["emit-json"] === true;
+  const strict = values.strict === true;
+  const minConfidenceRaw = cleanOptional(values["min-confidence"]);
 
   if (!Number.isInteger(top) || top < 1) {
     throw new Error(`invalid --top value: ${values.top}`);
@@ -60,6 +66,17 @@ export function resolveKnowledgeAnswerOptions(values: {
   if (questionsFile && answerOut) {
     throw new Error("--answer-out is only valid with --question");
   }
+  if (
+    minConfidenceRaw !== undefined &&
+    minConfidenceRaw !== "low" &&
+    minConfidenceRaw !== "medium" &&
+    minConfidenceRaw !== "high"
+  ) {
+    throw new Error(`invalid --min-confidence value: ${values["min-confidence"]}`);
+  }
+  if (!strict && minConfidenceRaw !== undefined) {
+    throw new Error("--min-confidence requires --strict");
+  }
 
   return {
     knowledgeRoot,
@@ -70,6 +87,8 @@ export function resolveKnowledgeAnswerOptions(values: {
     outDir,
     top,
     emitJson,
+    strict,
+    minConfidence: minConfidenceRaw as "low" | "medium" | "high" | undefined,
   };
 }
 

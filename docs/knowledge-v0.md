@@ -92,6 +92,18 @@ prism knowledge answer \
   --emit-json
 ```
 
+Strict mode (writes output files, then fails non-zero when quality gates fail):
+
+```bash
+prism knowledge answer \
+  --question "How does auth work?" \
+  --knowledge-root .prism/knowledge \
+  --code-root /absolute/path/to/target-repo \
+  --out-dir .prism/knowledge/answers \
+  --strict \
+  --min-confidence high
+```
+
 Batch questions:
 
 ```bash
