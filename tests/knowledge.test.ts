@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   resolveKnowledgeAnswerOptions,
+  resolveKnowledgeAnswerReportOptions,
   resolveKnowledgeBuildOptions,
   resolveKnowledgeUpdateOptions,
 } from "../src/lib/knowledge-options.ts";
@@ -19,6 +20,7 @@ import {
   classifyIntent,
   runKnowledgeAnswer,
 } from "../src/stages/knowledge/answer.ts";
+import { runKnowledgeAnswerReport } from "../src/stages/knowledge/report.ts";
 import { runKnowledgeUpdate } from "../src/stages/knowledge/update.ts";
 
 test("knowledge build discovers multi-run and single-entry analyze artifacts", async () => {
@@ -2404,3 +2406,758 @@ async function createKnowledgeAnswerRepoSignalFixtureProject(): Promise<string> 
 
   return baseDir;
 }
+
+test("knowledge answer-report options resolver applies defaults and validates", () => {
+  expect(resolveKnowledgeAnswerReportOptions({})).toEqual({
+    knowledgeRoot: ".prism/knowledge",
+    answersDir: ".prism/knowledge/answers",
+    reportOut: undefined,
+    strict: false,
+    minConfidence: undefined,
+  });
+
+  expect(
+    resolveKnowledgeAnswerReportOptions({
+      "knowledge-root": "  custom/knowledge  ",
+      "answers-dir": "  custom/answers  ",
+      "report-out": "  /abs/out  ",
+      strict: true,
+      "min-confidence": "high",
+    }),
+  ).toEqual({
+    knowledgeRoot: "custom/knowledge",
+    answersDir: "custom/answers",
+    reportOut: "/abs/out",
+    strict: true,
+    minConfidence: "high",
+  });
+
+  expect(() =>
+    resolveKnowledgeAnswerReportOptions({ "min-confidence": "high" }),
+  ).toThrow("--min-confidence requires --strict");
+
+  expect(() =>
+    resolveKnowledgeAnswerReportOptions({ strict: true, "min-confidence": "bad" }),
+  ).toThrow("invalid --min-confidence value");
+});
+
+test("knowledge answer-report emits manifest and placeholder index", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/v28-out");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    expect(existsSync(result.manifestPath)).toBe(true);
+    expect(existsSync(result.indexPath)).toBe(true);
+    expect(result.reportRoot).toBe(reportOut);
+
+    expect(result.manifest.schemaVersion).toBe(1);
+    expect(result.manifest.digest).toMatch(/^[0-9a-f]{12}$/);
+    expect(result.manifest.knowledgeRoot).toBe(".prism/knowledge");
+    expect(result.manifest.answersDir).toBe(".prism/knowledge/answers");
+    expect(result.manifest.strict).toBe(false);
+    expect(result.manifest.minConfidence).toBeNull();
+    expect(result.manifest.counts.questions).toBe(1);
+    expect(result.manifest.counts.classificationSidecars).toBe(1);
+    expect(result.manifest.counts.evidencePackSidecars).toBe(1);
+    expect(result.manifest.counts.answerJsonSidecars).toBe(1);
+    expect(result.manifest.counts.answerSidecars).toBe(3);
+    expect(result.manifest.counts.markdownSidecars).toBe(1);
+    expect(result.manifest.counts.inputs).toBe(6);
+    expect(result.manifest.counts.questionsWithoutJson).toBe(0);
+    expect(result.manifest.sources).toEqual([...result.manifest.sources].sort());
+    expect(result.manifest.pages.length).toBe(16);
+
+    const manifestOnDisk = JSON.parse(await readFile(result.manifestPath, "utf8"));
+    expect(manifestOnDisk.digest).toBe(result.manifest.digest);
+
+    const indexContent = await readFile(result.indexPath, "utf8");
+    expect(indexContent).toContain("# Prism Knowledge Answer Report");
+    expect(indexContent).toContain(`digest: \`${result.manifest.digest}\``);
+    expect(indexContent).toContain("Deterministic aggregator (v2.12)");
+    expect(indexContent).toContain("## Reading Order");
+    expect(indexContent).toContain("## Pages");
+    expect(indexContent).toContain("## Per-Question Pages");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report rerun keeps manifest and index byte-identical", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/rerun");
+
+    const first = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+    const firstManifest = await readFile(first.manifestPath, "utf8");
+    const firstIndex = await readFile(first.indexPath, "utf8");
+    const firstManifestStat = await stat(first.manifestPath);
+    const firstIndexStat = await stat(first.indexPath);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: false,
+    });
+    const secondManifest = await readFile(second.manifestPath, "utf8");
+    const secondIndex = await readFile(second.indexPath, "utf8");
+    const secondManifestStat = await stat(second.manifestPath);
+    const secondIndexStat = await stat(second.indexPath);
+
+    expect(secondManifest).toBe(firstManifest);
+    expect(secondIndex).toBe(firstIndex);
+    expect(secondManifestStat.mtimeMs).toBe(firstManifestStat.mtimeMs);
+    expect(secondIndexStat.mtimeMs).toBe(firstIndexStat.mtimeMs);
+    expect(second.manifest.digest).toBe(first.manifest.digest);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report fails when knowledge-pack is missing", async () => {
+  const baseDir = await mkdtemp(join(tmpdir(), "prism-knowledge-report-missing-"));
+  try {
+    await mkdir(join(baseDir, ".prism/knowledge/answers"), { recursive: true });
+    await expect(
+      runKnowledgeAnswerReport({
+        baseDir,
+        knowledgeRoot: ".prism/knowledge",
+        answersDir: ".prism/knowledge/answers",
+        reportOut: join(baseDir, "out"),
+        strict: false,
+      }),
+    ).rejects.toThrow("knowledge-pack.json missing");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report emits pages, per-question files, data, and validation report", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await writeFile(
+      join(baseDir, "questions.json"),
+      JSON.stringify(["How app page works", "What auth flow is used"]),
+    );
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: "questions.json",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/v29-out");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    expect(result.manifest.counts.questions).toBe(2);
+    expect(result.manifest.counts.classificationSidecars).toBe(2);
+    expect(result.manifest.counts.evidencePackSidecars).toBe(2);
+    expect(result.manifest.counts.answerJsonSidecars).toBe(2);
+    expect(result.manifest.counts.markdownSidecars).toBe(2);
+    expect(result.manifest.counts.questionsWithoutJson).toBe(0);
+    expect(result.manifest.pages.length).toBe(16);
+
+    for (const page of [
+      "00-overview.md",
+      "01-evidence-map.md",
+      "02-class-breakdown.md",
+      "03-follow-up.md",
+      "04-strict-issues.md",
+      "05-integrity-signals.md",
+      "06-diagram-index.md",
+    ]) {
+      expect(existsSync(join(reportOut, "pages", page))).toBe(true);
+    }
+
+    const overview = await readFile(join(reportOut, "pages/00-overview.md"), "utf8");
+    expect(overview).toContain("# 00 Overview");
+    expect(overview).toContain("How app page works");
+    expect(overview).toContain("What auth flow is used");
+
+    const questionsData = JSON.parse(
+      await readFile(join(reportOut, "data/questions.json"), "utf8"),
+    );
+    expect(questionsData.schemaVersion).toBe(1);
+    expect(questionsData.count).toBe(2);
+    expect(questionsData.questions[0].digest.length).toBe(12);
+
+    const rollup = JSON.parse(
+      await readFile(join(reportOut, "data/entries-rollup.json"), "utf8"),
+    );
+    expect(rollup.schemaVersion).toBe(1);
+    expect(rollup.entries.length).toBeGreaterThan(0);
+
+    const strictRollup = JSON.parse(
+      await readFile(join(reportOut, "data/strict-rollup.json"), "utf8"),
+    );
+    expect(strictRollup.schemaVersion).toBe(1);
+    expect(strictRollup.summary).toBeNull();
+
+    const validation = await readFile(result.validationReportPath, "utf8");
+    expect(validation).toContain("# Validation Report");
+    expect(validation).toContain("question count: 2");
+
+    for (const question of result.manifest.counts ? questionsData.questions : []) {
+      expect(
+        existsSync(join(reportOut, "questions", `${question.digest}.md`)),
+      ).toBe(true);
+    }
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report aggregator rerun is byte-identical", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/idem");
+    const first = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+    const firstManifest = await readFile(first.manifestPath, "utf8");
+    const firstOverview = await readFile(
+      join(reportOut, "pages/00-overview.md"),
+      "utf8",
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: false,
+    });
+    const secondManifest = await readFile(second.manifestPath, "utf8");
+    const secondOverview = await readFile(
+      join(reportOut, "pages/00-overview.md"),
+      "utf8",
+    );
+
+    expect(secondManifest).toBe(firstManifest);
+    expect(secondOverview).toBe(firstOverview);
+    expect(second.manifest.digest).toBe(first.manifest.digest);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report strict mode flags ambiguous question", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "tell me something",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/strict");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "high",
+      force: true,
+    });
+
+    expect(result.strictIssues.length).toBeGreaterThan(0);
+    expect(result.strictFailed).toBe(true);
+    expect(result.manifest.strictSummary).not.toBeNull();
+    expect(result.manifest.strictSummary!.failedQuestionCount).toBeGreaterThan(0);
+
+    const strictPage = await readFile(
+      join(reportOut, "pages/04-strict-issues.md"),
+      "utf8",
+    );
+    expect(strictPage).toContain("# 04 Strict Issues");
+    expect(strictPage).toContain("## Categories");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report warns when answer .json sidecar is missing", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: false,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/no-json");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    expect(result.manifest.counts.answerJsonSidecars).toBe(0);
+    expect(result.manifest.counts.questionsWithoutJson).toBe(1);
+    expect(result.manifest.counts.warnings).toBeGreaterThan(0);
+
+    const validation = await readFile(result.validationReportPath, "utf8");
+    expect(validation).toContain("Questions Without Answer JSON Sidecar");
+    expect(validation).toContain("rerun answer with --emit-json");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report emits teaching pages and glossary", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/teaching");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    expect(result.manifest.pages.length).toBe(16);
+
+    for (const page of [
+      "10-react-standards.md",
+      "11-typescript-standards.md",
+      "12-security.md",
+      "13-performance.md",
+      "14-bloaters.md",
+      "15-complexity-hotspots.md",
+      "16-coupling-cohesion.md",
+      "17-todo-debt.md",
+      "99-glossary.md",
+    ]) {
+      expect(existsSync(join(reportOut, "pages", page))).toBe(true);
+    }
+
+    const react = await readFile(join(reportOut, "pages/10-react-standards.md"), "utf8");
+    expect(react).toContain("# 10 React Standards");
+    expect(react).toContain("lenses: hook-deps-mismatch, react");
+    expect(react).toContain("react.dev/reference/eslint-plugin-react-hooks");
+
+    const security = await readFile(join(reportOut, "pages/12-security.md"), "utf8");
+    expect(security).toContain("# 12 Security");
+    expect(security).toContain("HTML injection");
+    expect(security).toContain("rules.sonarsource.com");
+
+    const glossary = await readFile(join(reportOut, "pages/99-glossary.md"), "utf8");
+    expect(glossary).toContain("# 99 Glossary");
+    for (const lensId of [
+      "hook-deps-mismatch",
+      "complexity-hotspot",
+      "type-safety-escape",
+      "bloater",
+      "dead-code",
+      "await-in-loop",
+      "security-quick-win",
+      "todo-density",
+      "layering",
+      "react",
+      "coupling",
+      "diagrams",
+    ]) {
+      expect(glossary).toContain(`## ${lensId}`);
+    }
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report teaching pages are idempotent", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/teaching-idem");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+    const firstGlossary = await readFile(join(reportOut, "pages/99-glossary.md"), "utf8");
+    const firstReact = await readFile(
+      join(reportOut, "pages/10-react-standards.md"),
+      "utf8",
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: false,
+    });
+    const secondGlossary = await readFile(join(reportOut, "pages/99-glossary.md"), "utf8");
+    const secondReact = await readFile(
+      join(reportOut, "pages/10-react-standards.md"),
+      "utf8",
+    );
+
+    expect(secondGlossary).toBe(firstGlossary);
+    expect(secondReact).toBe(firstReact);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report diagram-index is populated from artifacts-index", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/diagrams");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const diagramIndex = await readFile(
+      join(reportOut, "pages/06-diagram-index.md"),
+      "utf8",
+    );
+    expect(diagramIndex).toContain("# 06 Diagram Index");
+    expect(diagramIndex).toContain("component-tree");
+    expect(diagramIndex).toContain("service-flow");
+    expect(diagramIndex).toContain("app-page");
+    expect(diagramIndex).not.toContain("No diagrams discovered");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report strict mode flags missing_code_file", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const answersDir = join(baseDir, ".prism/knowledge/answers");
+    const entries = await readFile(
+      join(answersDir, (await import("node:fs")).readdirSync(answersDir).find((f: string) => f.endsWith(".json") && !f.endsWith(".classification.json") && !f.endsWith(".evidence-pack.json") && f !== "index.md")!),
+      "utf8",
+    );
+    const json = JSON.parse(entries);
+    if (json.entries && json.entries.length > 0) {
+      json.entries[0].codeExists = false;
+      json.entries[0].path = "src/missing/ghost.tsx";
+    }
+    const jsonFiles = (await import("node:fs")).readdirSync(answersDir).filter(
+      (f: string) => f.endsWith(".json") && !f.endsWith(".classification.json") && !f.endsWith(".evidence-pack.json"),
+    );
+    if (jsonFiles.length > 0) {
+      await writeFile(join(answersDir, jsonFiles[0]!), JSON.stringify(json, null, 2));
+    }
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/strict-code");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "low",
+      force: true,
+    });
+
+    expect(result.strictFailed).toBe(true);
+    expect(result.strictIssues.some((i) => i.category === "missing_code_file")).toBe(true);
+    const strictPage = await readFile(join(reportOut, "pages/04-strict-issues.md"), "utf8");
+    expect(strictPage).toContain("missing_code_file");
+    expect(strictPage).toContain("src/missing/ghost.tsx");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report e2e smoke: build → answer → report → verify", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await writeFile(
+      join(baseDir, "questions.json"),
+      JSON.stringify(["How app page works", "What is the auth flow"]),
+    );
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: "questions.json",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/e2e");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "low",
+      force: true,
+    });
+
+    expect(existsSync(result.manifestPath)).toBe(true);
+    expect(existsSync(result.indexPath)).toBe(true);
+    expect(existsSync(result.validationReportPath)).toBe(true);
+    expect(result.manifest.schemaVersion).toBe(1);
+    expect(result.manifest.counts.questions).toBe(2);
+    expect(result.manifest.strict).toBe(true);
+    expect(result.manifest.pages.length).toBe(16);
+
+    const index = await readFile(result.indexPath, "utf8");
+    expect(index).toContain("strict mode: enabled");
+    expect(index).toContain("Deterministic aggregator (v2.12)");
+
+    for (const dataFile of ["questions.json", "entries-rollup.json", "strict-rollup.json"]) {
+      expect(existsSync(join(reportOut, "data", dataFile))).toBe(true);
+    }
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report strict produces parse-friendly markers", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "auth?",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/strict-markers");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "high",
+      force: true,
+    });
+
+    expect(result.strictFailed).toBe(true);
+    expect(result.strictIssues.length).toBeGreaterThan(0);
+    expect(result.manifest.strictSummary).not.toBeNull();
+    expect(result.manifest.strictSummary!.issueCount).toBeGreaterThan(0);
+    expect(result.manifest.strictSummary!.categories.length).toBeGreaterThan(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

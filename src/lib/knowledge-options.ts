@@ -17,6 +17,14 @@ export interface ResolvedKnowledgeAnswerOptions {
   minConfidence?: "low" | "medium" | "high";
 }
 
+export interface ResolvedKnowledgeAnswerReportOptions {
+  knowledgeRoot: string;
+  answersDir: string;
+  reportOut?: string;
+  strict: boolean;
+  minConfidence?: "low" | "medium" | "high";
+}
+
 export interface ResolvedKnowledgeUpdateOptions {
   repoRoot: string;
   knowledgeRoot: string;
@@ -68,6 +76,40 @@ export function resolveKnowledgeUpdateOptions(values: {
     to,
     batchSize,
     dryRun,
+  };
+}
+
+export function resolveKnowledgeAnswerReportOptions(values: {
+  "knowledge-root"?: string;
+  "answers-dir"?: string;
+  "report-out"?: string;
+  strict?: boolean;
+  "min-confidence"?: string;
+}): ResolvedKnowledgeAnswerReportOptions {
+  const knowledgeRoot = cleanOption(values["knowledge-root"], ".prism/knowledge");
+  const answersDir = cleanOption(values["answers-dir"], ".prism/knowledge/answers");
+  const reportOut = cleanOptional(values["report-out"]);
+  const strict = values.strict === true;
+  const minConfidenceRaw = cleanOptional(values["min-confidence"]);
+
+  if (
+    minConfidenceRaw !== undefined &&
+    minConfidenceRaw !== "low" &&
+    minConfidenceRaw !== "medium" &&
+    minConfidenceRaw !== "high"
+  ) {
+    throw new Error(`invalid --min-confidence value: ${values["min-confidence"]}`);
+  }
+  if (!strict && minConfidenceRaw !== undefined) {
+    throw new Error("--min-confidence requires --strict");
+  }
+
+  return {
+    knowledgeRoot,
+    answersDir,
+    reportOut,
+    strict,
+    minConfidence: minConfidenceRaw as "low" | "medium" | "high" | undefined,
   };
 }
 

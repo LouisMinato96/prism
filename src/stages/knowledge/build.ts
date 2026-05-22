@@ -541,15 +541,26 @@ async function loadInsightsSummaries(
   if (parsed === null) return [];
 
   return parsed.insights
-    .map((insight) => ({
-      runDigest,
-      entry: entryName,
-      id: insight.id,
-      severity: insight.severity,
-      lens: insight.lens,
-      title: insight.title,
-      evidenceCount: insight.evidence.length,
-    }))
+    .map((insight) => {
+      const firstEvidence = insight.evidence[0] ?? {};
+      return {
+        runDigest,
+        entry: entryName,
+        id: insight.id,
+        severity: insight.severity,
+        lens: insight.lens,
+        title: insight.title,
+        evidenceCount: insight.evidence.length,
+        explanation: insight.explanation,
+        suggestion: insight.suggestion,
+        docsUrl: insight.docsUrl,
+        metric: insight.metric,
+        evidenceFile: firstEvidence.file,
+        evidenceLine: firstEvidence.line,
+        evidenceSymbol: firstEvidence.symbol,
+        evidenceDetail: firstEvidence.detail,
+      };
+    })
     .sort((a, b) => knowledgeInsightSortKey(a).localeCompare(knowledgeInsightSortKey(b)));
 }
 

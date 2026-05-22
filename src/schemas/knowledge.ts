@@ -113,6 +113,20 @@ export const KnowledgeInsightSummarySchema = z.object({
   lens: z.string(),
   title: z.string(),
   evidenceCount: z.number().int().nonnegative(),
+  explanation: z.string().optional(),
+  suggestion: z.string().optional(),
+  docsUrl: z.string().optional(),
+  metric: z
+    .object({
+      name: z.string(),
+      value: z.number(),
+      threshold: z.number(),
+    })
+    .optional(),
+  evidenceFile: z.string().optional(),
+  evidenceLine: z.number().int().positive().optional(),
+  evidenceSymbol: z.string().optional(),
+  evidenceDetail: z.string().optional(),
 });
 export type KnowledgeInsightSummary = z.infer<typeof KnowledgeInsightSummarySchema>;
 

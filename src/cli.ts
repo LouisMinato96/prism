@@ -14,6 +14,7 @@ import { runArchitecture } from "./stages/architecture.ts";
 import { loadAnalyzeConfig, resolveAnalyzeInput } from "./lib/analyze-config.ts";
 import {
   resolveKnowledgeAnswerOptions,
+  resolveKnowledgeAnswerReportOptions,
   resolveKnowledgeBuildOptions,
   resolveKnowledgeUpdateOptions,
 } from "./lib/knowledge-options.ts";
@@ -24,6 +25,7 @@ import {
 } from "./stages/analyze/run.ts";
 import { runKnowledgeBuild } from "./stages/knowledge/build.ts";
 import { runKnowledgeAnswer } from "./stages/knowledge/answer.ts";
+import { runKnowledgeAnswerReport } from "./stages/knowledge/report.ts";
 import { runKnowledgeUpdate } from "./stages/knowledge/update.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
@@ -37,6 +39,7 @@ USAGE:
   prism knowledge build [options]
   prism knowledge answer --question <text> [options]
   prism knowledge answer --questions-file <path> [options]
+  prism knowledge answer-report [options]
   prism knowledge update --from <commit> --to <commit> [options]
 
 OPTIONS:
@@ -70,6 +73,8 @@ OPTIONS:
   --emit-json           Knowledge answer command: also emit machine-readable JSON sidecar(s)
   --strict              Knowledge answer command: fail with non-zero exit when confidence/artifact checks fail
   --min-confidence <low|medium|high> Knowledge answer strict mode: minimum required confidence
+  --answers-dir <path>  Knowledge answer-report command: input answers directory (default: .prism/knowledge/answers)
+  --report-out <path>   Knowledge answer-report command: output directory (default: <knowledge-root>/answer-reports/<digest>)
   --help               Show this message
 
 ENV VARS:
@@ -114,6 +119,8 @@ async function main() {
       "emit-json": { type: "boolean", default: false },
       strict: { type: "boolean", default: false },
       "min-confidence": { type: "string" },
+      "answers-dir": { type: "string" },
+      "report-out": { type: "string" },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -214,6 +221,60 @@ async function main() {
         }
         for (const failure of result.strict.failures) {
           log.error(failure, "knowledge:strict");
+        }
+        process.exit(1);
+      }
+      return;
+    }
+
+    if (subcmd === "answer-report") {
+      let reportOptions: ReturnType<typeof resolveKnowledgeAnswerReportOptions>;
+      try {
+        reportOptions = resolveKnowledgeAnswerReportOptions({
+          "knowledge-root": values["knowledge-root"] as string | undefined,
+          "answers-dir": values["answers-dir"] as string | undefined,
+          "report-out": values["report-out"] as string | undefined,
+          strict: values.strict === true,
+          "min-confidence": values["min-confidence"] as string | undefined,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "knowledge:answer-report");
+        process.exit(1);
+      }
+
+      const result = await runKnowledgeAnswerReport({
+        knowledgeRoot: reportOptions.knowledgeRoot,
+        answersDir: reportOptions.answersDir,
+        reportOut: reportOptions.reportOut,
+        strict: reportOptions.strict,
+        minConfidence: reportOptions.minConfidence,
+        force,
+      });
+      log.done(result.reportRoot, "answer-report");
+      if (result.strictFailed) {
+        const summary = result.manifest.strictSummary;
+        log.error(
+          `strict mode failed with ${result.strictIssues.length} issue(s); minimum confidence: ${reportOptions.minConfidence ?? "medium"}`,
+          "answer-report:strict",
+        );
+        if (summary) {
+          log.error(
+            `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${reportOptions.minConfidence ?? "medium"}`,
+            "answer-report:strict",
+          );
+          for (const category of summary.categories) {
+            log.error(
+              `STRICT_CATEGORY category=${category.category} count=${category.count}`,
+              "answer-report:strict",
+            );
+          }
+        }
+        for (const issue of result.strictIssues) {
+          log.error(
+            `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
+            "answer-report:strict",
+          );
         }
         process.exit(1);
       }

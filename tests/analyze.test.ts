@@ -36,7 +36,7 @@ test("analyze stages produce a bounded TSX graph from an entry file", async () =
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
     const report = await runAnalyzeReport(
       wd,
       scope,
@@ -345,7 +345,7 @@ test("analyze graph detects Zustand-style store access", async () => {
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
     await runAnalyzeReport(wd, scope, symbols, repoIndex, graph, diagrams, insights, {
       force: true,
     });
@@ -622,7 +622,7 @@ test("analyze report stitches artifacts and skips cached output unless forced", 
     const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const first = await runAnalyzeReport(
       wd,
@@ -789,7 +789,7 @@ test("symbol directory truncates dense, exported, and type previews deterministi
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
 
     const paddedRepoIndex: AnalyzeRepoIndex = {
       ...repoIndex,
@@ -881,7 +881,7 @@ test("module directory summarizes folders and deterministic notes", async () => 
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
 
     const extraFiles = [
       ...Array.from({ length: 10 }, (_, index) => ({
@@ -1035,7 +1035,7 @@ test("module directory groups repeated widget constants notes and caps note outp
     const repoIndex = await runAnalyzeRepoIndex(wd, scope, symbols, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
 
     const zeroTypeCounts = {
       component: 0,
@@ -1201,7 +1201,7 @@ test("analyze insights flag deterministic architecture issues", async () => {
     const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    const insights = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
 
     expect(insights.insights).toContainEqual(
       expect.objectContaining({
@@ -1230,17 +1230,17 @@ test("analyze insights skip cached output unless forced", async () => {
     const symbols = await runAnalyzeSymbols(wd, scope, { force: true });
     const graph = await runAnalyzeGraph(wd, scope, symbols, { force: true });
     const diagrams = await runAnalyzeDiagrams(wd, graph, { force: true });
-    await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
 
     await writeFile(
       wd.insightsFile(),
       JSON.stringify({ entry: "cached", generatedFrom: "cached", insights: [] }),
     );
 
-    const cached = await runAnalyzeInsights(wd, graph, diagrams);
+    const cached = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams);
     expect(cached.entry).toBe("cached");
 
-    const forced = await runAnalyzeInsights(wd, graph, diagrams, { force: true });
+    const forced = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, { force: true });
     expect(forced.entry).toBe("src/app/page.tsx");
     expect(forced.insights.length).toBeGreaterThan(0);
   } finally {

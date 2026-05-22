@@ -117,7 +117,7 @@ export async function runAnalyzeEntry(
   const diagrams = await runAnalyzeDiagrams(wd, graph, {
     force: isForced("diagrams"),
   });
-  const insights = await runAnalyzeInsights(wd, graph, diagrams, {
+  const insights = await runAnalyzeInsights(wd, scope, symbols, graph, diagrams, {
     force: isForced("insights"),
   });
   await runAnalyzeReport(wd, scope, symbols, repoIndex, graph, diagrams, insights, {

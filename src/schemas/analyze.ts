@@ -161,8 +161,19 @@ export const AnalyzeInsightEvidenceSchema = z.object({
   to: z.string().optional(),
   node: z.string().optional(),
   diagram: z.string().optional(),
+  file: z.string().optional(),
+  line: z.number().int().positive().optional(),
+  symbol: z.string().optional(),
+  detail: z.string().optional(),
 });
 export type AnalyzeInsightEvidence = z.infer<typeof AnalyzeInsightEvidenceSchema>;
+
+export const AnalyzeInsightMetricSchema = z.object({
+  name: z.string(),
+  value: z.number(),
+  threshold: z.number(),
+});
+export type AnalyzeInsightMetric = z.infer<typeof AnalyzeInsightMetricSchema>;
 
 export const AnalyzeInsightSchema = z.object({
   id: z.string(),
@@ -172,6 +183,8 @@ export const AnalyzeInsightSchema = z.object({
   evidence: z.array(AnalyzeInsightEvidenceSchema),
   explanation: z.string(),
   suggestion: z.string().optional(),
+  metric: AnalyzeInsightMetricSchema.optional(),
+  docsUrl: z.string().optional(),
 });
 export type AnalyzeInsight = z.infer<typeof AnalyzeInsightSchema>;
 

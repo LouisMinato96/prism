@@ -9,6 +9,7 @@ It has three primary capabilities:
 | Pull request review | `prism review <pr-number>` | Review every AST-derived reviewable unit in a GitHub PR, enforce coverage, and optionally post the result back to GitHub. | Claude is used for classification, review, aggregate reporting, and PR architecture narrative. Coverage is computed by code. |
 | Static analysis | `prism analyze ...` | Analyze one entrypoint or a bounded set of entrypoints in a repo and produce deterministic architecture maps, symbol/module directories, diagrams, insights, and reports. | No LLM. All facts come from source, AST extraction, import traversal, and deterministic graph logic. |
 | Repo knowledge | `prism knowledge build` + `prism knowledge answer` + `prism knowledge update` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs, write grounded answer files, and apply deterministic incremental refresh from git commit ranges. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
+| Answer report | `prism knowledge answer-report` | Aggregate answer sidecars into a navigable, teachable multi-file report with strict gates, teaching pages (React/TS standards, security, performance, bloaters, complexity, coupling, tech debt), glossary, diagram index, and evidence maps. | No LLM. All content is deterministic rendering from existing answer + analyze artifacts. |
 
 The core promise is the same in both modes: disk-backed stages, deterministic inputs and outputs, bounded work, inspectable failures, and safe reruns.
 
@@ -61,6 +62,7 @@ flowchart TD
   Knowledge --> KLoad["load analyze manifests/artifacts"]
   Knowledge --> KPack["build knowledge pack + index"]
   Knowledge --> KValidate["validate links and refs"]
+  Knowledge --> KReport["answer-report (teaching pages, strict, diagrams)"]
 ```
 
 ## PR Review
@@ -533,6 +535,62 @@ Update report/state schema contract:
 
 - See [`docs/knowledge-update-schema.md`](docs/knowledge-update-schema.md).
 
+### Answer Report
+
+`prism knowledge answer-report` aggregates existing answer sidecars into a navigable, teachable multi-file report.
+
+```bash
+prism knowledge answer-report \
+  --knowledge-root .prism/knowledge \
+  --answers-dir .prism/knowledge/answers \
+  --report-out .prism/knowledge/answer-reports/latest
+
+# Strict mode (exits non-zero when gates fail)
+prism knowledge answer-report \
+  --knowledge-root .prism/knowledge \
+  --answers-dir .prism/knowledge/answers \
+  --strict --min-confidence medium
+```
+
+Output structure:
+
+```text
+<report-root>/
+├── manifest.json
+├── index.md
+├── validation-report.md
+├── pages/
+│   ├── 00-overview.md
+│   ├── 01-evidence-map.md
+│   ├── 02-class-breakdown.md
+│   ├── 03-follow-up.md
+│   ├── 04-strict-issues.md
+│   ├── 05-integrity-signals.md
+│   ├── 06-diagram-index.md
+│   ├── 10-react-standards.md
+│   ├── 11-typescript-standards.md
+│   ├── 12-security.md
+│   ├── 13-performance.md
+│   ├── 14-bloaters.md
+│   ├── 15-complexity-hotspots.md
+│   ├── 16-coupling-cohesion.md
+│   ├── 17-todo-debt.md
+│   └── 99-glossary.md
+├── questions/
+│   └── <digest>.md
+└── data/
+    ├── questions.json
+    ├── entries-rollup.json
+    └── strict-rollup.json
+```
+
+Start reading from `index.md`. Teaching pages (10–17) surface opinionated, codebase-grounded insights on React/TS standards, security, performance, bloaters, complexity hotspots, coupling/cohesion, and tech debt markers. The glossary (99) documents all 13 deterministic insight lenses.
+
+Answer-report schema contract:
+
+- See [`docs/knowledge-answer-report-schema.md`](docs/knowledge-answer-report-schema.md).
+- See [`docs/analyze-lenses.md`](docs/analyze-lenses.md) for the full lens catalog.
+
 ## CLI Options
 
 ```text
@@ -542,6 +600,7 @@ prism knowledge build [options]
 prism knowledge answer --question <text> [options]
 prism knowledge answer --questions-file <path> [options]
 prism knowledge update --from <commit> --to <commit> [options]
+prism knowledge answer-report [options]
 
 Options:
   --force              Force re-run of all stages
@@ -572,8 +631,10 @@ Options:
   --out-dir <path>      Knowledge answer command: answers output directory
   --top <n>             Knowledge answer command: max evidence rows per section
   --emit-json           Knowledge answer command: also emit JSON sidecar(s)
-  --strict              Knowledge answer command: fail non-zero when confidence/artifact checks fail
-  --min-confidence <low|medium|high> Knowledge answer strict mode: minimum confidence gate
+  --strict              Knowledge answer/answer-report: fail non-zero when gates fail
+  --min-confidence <low|medium|high> Knowledge answer/answer-report strict mode: minimum confidence gate
+  --answers-dir <path>  Knowledge answer-report command: answers output directory to aggregate
+  --report-out <path>   Knowledge answer-report command: report output directory
 ```
 
 ## Environment
@@ -610,6 +671,8 @@ bun test
 - [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
 - [`docs/knowledge-answer-schema.md`](docs/knowledge-answer-schema.md): deterministic answer JSON contract and strict diagnostics format.
 - [`docs/knowledge-update-schema.md`](docs/knowledge-update-schema.md): deterministic update report and state schema contract.
+- [`docs/knowledge-answer-report-schema.md`](docs/knowledge-answer-report-schema.md): answer-report manifest, pages, data schemas, strict gates, and determinism rules.
+- [`docs/analyze-lenses.md`](docs/analyze-lenses.md): full catalog of 13 deterministic insight lenses with detection rules, severity, metrics.
 - [`docs/knowledge-v2-prep.md`](docs/knowledge-v2-prep.md): V2 implementation-ready hardening plan.
 - [`docs/knowledge-v3-prep.md`](docs/knowledge-v3-prep.md): V3 implementation-ready incremental-update plan.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.

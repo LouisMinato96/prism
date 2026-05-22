@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import type { SourceFile } from "ts-morph";
 import type { AnalyzeWorkdir } from "../../lib/analyze-workdir.ts";
 import {
   AnalyzeInsightsSchema,
@@ -8,14 +9,20 @@ import {
   type AnalyzeInsight,
   type AnalyzeInsights,
   type AnalyzeNode,
+  type AnalyzeScope,
+  type AnalyzeSymbols,
 } from "../../schemas/index.ts";
 import { log } from "../../lib/log.ts";
 import type { AnalyzeDiagram } from "./diagrams.ts";
+import { createAnalyzeProject, toAbsolutePath } from "./utils.ts";
+import { runLenses } from "./lenses/index.ts";
 
 const HUB_THRESHOLD = 4;
 
 export async function runAnalyzeInsights(
   wd: AnalyzeWorkdir,
+  scope: AnalyzeScope,
+  symbols: AnalyzeSymbols,
   graph: AnalyzeGraph,
   diagrams: AnalyzeDiagram[],
   opts: { force?: boolean } = {},
@@ -30,13 +37,41 @@ export async function runAnalyzeInsights(
   log.step("running deterministic lenses", stage);
 
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-  const insights = [
+  const project = createAnalyzeProject();
+  const sourceFiles = new Map<string, SourceFile>();
+  for (const file of scope.files) {
+    try {
+      const source = project.addSourceFileAtPath(toAbsolutePath(wd.baseDir, file.path));
+      sourceFiles.set(file.path, source);
+    } catch {
+      // skip files that cannot be parsed (lens detectors handle absence)
+    }
+  }
+
+  const legacyInsights = [
     ...findLayerLeaks(graph.edges, nodes),
     ...findDirectionViolations(graph.edges, nodes),
     ...findCycles(graph.edges, nodes),
     ...findHubs(graph.edges, nodes),
     ...findEmptyDiagrams(diagrams),
-  ].sort((a, b) => a.id.localeCompare(b.id));
+  ];
+
+  const lensInsights = runLenses({
+    entry: graph.entry,
+    scope,
+    symbols,
+    graph,
+    diagrams,
+    sourceFiles,
+  });
+
+  for (const file of sourceFiles.values()) {
+    project.removeSourceFile(file);
+  }
+
+  const insights = [...legacyInsights, ...lensInsights].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
 
   const result: AnalyzeInsights = {
     entry: graph.entry,
