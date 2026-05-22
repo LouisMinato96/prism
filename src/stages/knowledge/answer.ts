@@ -9,12 +9,16 @@ import {
   AnalyzeRepoIndexSchema,
   ArtifactsIndexSchema,
   KnowledgePackSchema,
+  KnowledgeQuestionClassificationSchema,
   KnowledgeQuestionsFileSchema,
   type ArtifactIndexEntry,
   type ArtifactIndexRun,
   type ArtifactsIndex,
   type KnowledgeInsightSummary,
   type KnowledgePack,
+  type KnowledgeQuestionClass,
+  type KnowledgeQuestionClassConfidence,
+  type KnowledgeQuestionClassification,
 } from "../../schemas/index.ts";
 
 const KNOWLEDGE_PACK_FILE = "knowledge-pack.json";
@@ -26,6 +30,8 @@ export type KnowledgeAnswerIntent =
   | "data-flow"
   | "failure-debug"
   | "general";
+
+type PrimaryQuestionClass = Exclude<KnowledgeQuestionClass, "unknown_or_ambiguous">;
 
 const STOP_WORDS = new Set([
   "a",
@@ -108,9 +114,142 @@ const INTENT_KEYWORDS: Record<Exclude<KnowledgeAnswerIntent, "general">, string[
   ],
 };
 
+const QUESTION_CLASS_ORDER: PrimaryQuestionClass[] = [
+  "architecture_storyline",
+  "entrypoint_trace",
+  "dependency_flow",
+  "building_blocks",
+  "reference_lookup",
+  "change_guidance",
+];
+
+const QUESTION_CLASS_TIE_BREAK: KnowledgeQuestionClass[] = [
+  "reference_lookup",
+  "entrypoint_trace",
+  "dependency_flow",
+  "architecture_storyline",
+  "building_blocks",
+  "change_guidance",
+];
+
+const GLOBAL_VERB_RULES: Array<{
+  id: string;
+  phrases: string[];
+  weight: number;
+  target: PrimaryQuestionClass;
+}> = [
+  {
+    id: "verb_how",
+    phrases: ["how", "how does", "explain", "overview"],
+    weight: 22,
+    target: "architecture_storyline",
+  },
+  {
+    id: "verb_where",
+    phrases: ["where", "located", "defined"],
+    weight: 24,
+    target: "reference_lookup",
+  },
+  {
+    id: "verb_trace",
+    phrases: ["start", "entry", "handle", "route", "trigger"],
+    weight: 22,
+    target: "entrypoint_trace",
+  },
+  {
+    id: "verb_dep",
+    phrases: ["depends", "calls", "uses", "impact"],
+    weight: 22,
+    target: "dependency_flow",
+  },
+  {
+    id: "verb_parts",
+    phrases: ["parts", "components", "building blocks", "made of"],
+    weight: 20,
+    target: "building_blocks",
+  },
+  {
+    id: "verb_change",
+    phrases: ["add", "modify", "change", "implement"],
+    weight: 22,
+    target: "change_guidance",
+  },
+];
+
+const CLASS_PHRASE_RULES: Array<{
+  id: string;
+  phrases: string[];
+  weight: number;
+  target: PrimaryQuestionClass;
+}> = [
+  {
+    id: "phrase_architecture",
+    phrases: ["how does * work", "explain *", "architecture of *"],
+    weight: 26,
+    target: "architecture_storyline",
+  },
+  {
+    id: "phrase_entrypoint",
+    phrases: ["where does * start", "what handles *", "entry point for *"],
+    weight: 26,
+    target: "entrypoint_trace",
+  },
+  {
+    id: "phrase_dependency",
+    phrases: ["what depends on *", "what calls *", "what does * use"],
+    weight: 26,
+    target: "dependency_flow",
+  },
+  {
+    id: "phrase_building",
+    phrases: ["what files make up *", "components of *", "building blocks of *"],
+    weight: 24,
+    target: "building_blocks",
+  },
+  {
+    id: "phrase_reference",
+    phrases: ["where is * defined", "find usages of *", "references of *"],
+    weight: 28,
+    target: "reference_lookup",
+  },
+  {
+    id: "phrase_change",
+    phrases: [
+      "how to add *",
+      "how should i add *",
+      "where should i modify *",
+      "how to implement *",
+    ],
+    weight: 26,
+    target: "change_guidance",
+  },
+];
+
+const DOMAIN_TOPICS: Record<string, string[]> = {
+  auth: INTENT_KEYWORDS["auth-flow"],
+  permissions: INTENT_KEYWORDS.permissions,
+  data: INTENT_KEYWORDS["data-flow"],
+  failure: INTENT_KEYWORDS["failure-debug"],
+};
+
 interface QueryProfile {
   question: string;
   intent: KnowledgeAnswerIntent;
+  questionClass: KnowledgeQuestionClass;
+  classConfidence: KnowledgeQuestionClassConfidence;
+  classScore: number;
+  classDelta: number;
+  classMatchedRules: string[];
+  classScores: Array<{
+    class: KnowledgeQuestionClass;
+    score: number;
+    matchedRules: string[];
+  }>;
+  topicCandidates: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
   tokens: string[];
   matchedIntentKeywords: string[];
 }
@@ -137,6 +276,8 @@ export interface KnowledgeAnswerResult {
     question: string;
     outputPath: string;
     jsonOutputPath?: string;
+    classificationOutputPath: string;
+    evidencePackOutputPath: string;
   }>;
   indexPath?: string;
   strict: {
@@ -153,6 +294,16 @@ interface KnowledgeAnswerJson {
   schemaVersion: 1;
   question: string;
   questionDigest: string;
+  questionClass: KnowledgeQuestionClass;
+  questionClassConfidence: KnowledgeQuestionClassConfidence;
+  questionClassScore: number;
+  questionClassDelta: number;
+  questionClassRules: string[];
+  topicCandidates: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
   intent: KnowledgeAnswerIntent;
   intentKeywords: string[];
   generatedAt: string;
@@ -210,6 +361,43 @@ interface KnowledgeAnswerJson {
     staleRunSignals: string[];
     contradictionSignals: string[];
     relevantSignals: string[];
+  };
+  evidencePack: {
+    status: "complete" | "partial";
+    requirements: string[];
+    satisfied: string[];
+    missing: string[];
+    sources: Array<{
+      kind: "analyze_artifact" | "code_root_file";
+      path: string;
+      usedFor: string[];
+      exists: boolean;
+      note?: string;
+    }>;
+    codeRootFallback: {
+      used: boolean;
+      maxFiles: number;
+      maxBytesPerFile: number;
+      scannedFiles: number;
+      matchedFiles: number;
+      matchedPaths: string[];
+    };
+  };
+  failOpen: {
+    triggered: boolean;
+    reasons: string[];
+    candidateTopics: Array<{
+      label: string;
+      score: number;
+      reasons: string[];
+    }>;
+    candidateEntries: Array<{
+      run: string;
+      name: string;
+      path: string;
+      score: number;
+    }>;
+    missingRequirements: string[];
   };
   limits: string[];
 }
@@ -284,15 +472,24 @@ interface EntryArtifactEvidence {
 interface StrictEvaluation {
   question: string;
   questionDigest: string;
+  questionClass: KnowledgeQuestionClass;
+  questionClassConfidence: KnowledgeQuestionClassConfidence;
   confidence: {
     level: "low" | "medium" | "high";
     score: number;
   };
+  evidencePackStatus: "complete" | "partial";
+  missingEvidenceRequirements: EvidenceRequirement[];
+  failOpenTriggered: boolean;
+  failOpenReasons: string[];
   missingCriticalArtifacts: StrictArtifactGap[];
 }
 
 type StrictFailureCategory =
   | "confidence_below_min"
+  | "question_class_ambiguous"
+  | "evidence_pack_incomplete"
+  | "fail_open_required"
   | "missing_code_file"
   | "missing_graph"
   | "missing_repo_index"
@@ -318,9 +515,43 @@ export interface StrictSummary {
   categories: Array<{ category: StrictFailureCategory; count: number }>;
 }
 
+type EvidenceRequirement =
+  | "entrypoints"
+  | "building_blocks"
+  | "dependency_edges"
+  | "references";
+
+interface EvidencePack {
+  status: "complete" | "partial";
+  requirements: EvidenceRequirement[];
+  satisfied: EvidenceRequirement[];
+  missing: EvidenceRequirement[];
+  sources: Array<{
+    kind: "analyze_artifact" | "code_root_file";
+    path: string;
+    usedFor: EvidenceRequirement[];
+    exists: boolean;
+    note?: string;
+  }>;
+  codeRootFallback: {
+    used: boolean;
+    maxFiles: number;
+    maxBytesPerFile: number;
+    scannedFiles: number;
+    matchedFiles: number;
+    matchedPaths: string[];
+  };
+}
+
 interface BatchAnswerRecord {
   question: string;
   questionDigest: string;
+  questionClass: KnowledgeQuestionClass;
+  failOpenTriggered: boolean;
+  evidencePackStatus: "complete" | "partial";
+  classificationOutputPath: string;
+  evidencePackOutputPath: string;
+  missingEvidenceRequirements: string[];
   confidence: {
     level: "low" | "medium" | "high";
     score: number;
@@ -332,6 +563,9 @@ interface BatchAnswerRecord {
 
 const SECTION_ENTRY_LIMIT = 5;
 const EVIDENCE_MAP_LIMIT = 8;
+const HUMAN_SECTION_LIMIT = 8;
+const CODE_FALLBACK_MAX_FILES = 25;
+const CODE_FALLBACK_MAX_BYTES_PER_FILE = 250 * 1024;
 
 export async function runKnowledgeAnswer(
   options: KnowledgeAnswerOptions,
@@ -385,6 +619,8 @@ export async function runKnowledgeAnswer(
     question: string;
     outputPath: string;
     jsonOutputPath?: string;
+    classificationOutputPath: string;
+    evidencePackOutputPath: string;
   }> = [];
   const strictEvaluations: StrictEvaluation[] = [];
   const batchAnswers: BatchAnswerRecord[] = [];
@@ -409,6 +645,12 @@ export async function runKnowledgeAnswer(
       repoIndexSignalsByEntry,
     });
     await writeTextIfChanged(outputAbs, rendered.markdown, force);
+    const classificationPath = replaceExtension(outputAbs, ".classification.json");
+    const classificationText = `${JSON.stringify(rendered.classification, null, 2)}\n`;
+    await writeTextIfChanged(classificationPath, classificationText, force);
+    const evidencePackPath = replaceExtension(outputAbs, ".evidence-pack.json");
+    const evidencePackText = `${JSON.stringify(rendered.json.evidencePack, null, 2)}\n`;
+    await writeTextIfChanged(evidencePackPath, evidencePackText, force);
 
     let jsonOutputPath: string | undefined;
     if (emitJson) {
@@ -422,11 +664,19 @@ export async function runKnowledgeAnswer(
       question,
       outputPath: outputAbs,
       jsonOutputPath,
+      classificationOutputPath: classificationPath,
+      evidencePackOutputPath: evidencePackPath,
     });
     strictEvaluations.push(rendered.strictEvaluation);
     batchAnswers.push({
       question,
       questionDigest: rendered.json.questionDigest,
+      questionClass: rendered.json.questionClass,
+      failOpenTriggered: rendered.json.failOpen.triggered,
+      evidencePackStatus: rendered.json.evidencePack.status,
+      classificationOutputPath: classificationPath,
+      evidencePackOutputPath: evidencePackPath,
+      missingEvidenceRequirements: rendered.json.evidencePack.missing,
       confidence: rendered.json.confidence,
       outputPath: outputAbs,
       jsonOutputPath,
@@ -460,8 +710,8 @@ export async function runKnowledgeAnswer(
       "",
       "## Answers",
       "",
-      "| # | digest | confidence | strict | markdown | json | question |",
-      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| # | digest | class | confidence | evidence | fail-open | strict | markdown | json | classification | evidence-pack | question |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ];
     for (const [index, answer] of batchAnswers.entries()) {
       const strictCell = strict
@@ -472,10 +722,72 @@ export async function runKnowledgeAnswer(
       const jsonCell = answer.jsonOutputPath
         ? `\`${toDisplayPath(baseDir, answer.jsonOutputPath)}\``
         : "-";
+      const failOpenCell = answer.failOpenTriggered ? "yes" : "no";
+      const classificationCell = `\`${toDisplayPath(baseDir, answer.classificationOutputPath)}\``;
+      const evidencePackCell = `\`${toDisplayPath(baseDir, answer.evidencePackOutputPath)}\``;
       lines.push(
-        `| ${index + 1} | ${answer.questionDigest} | ${answer.confidence.level} (${answer.confidence.score}/100) | ${strictCell} | \`${toDisplayPath(baseDir, answer.outputPath)}\` | ${jsonCell} | ${escapeTableCell(answer.question)} |`,
+        `| ${index + 1} | ${answer.questionDigest} | ${answer.questionClass} | ${answer.confidence.level} (${answer.confidence.score}/100) | ${answer.evidencePackStatus} | ${failOpenCell} | ${strictCell} | \`${toDisplayPath(baseDir, answer.outputPath)}\` | ${jsonCell} | ${classificationCell} | ${evidencePackCell} | ${escapeTableCell(answer.question)} |`,
       );
     }
+
+    const classSummary = summarizeCounts(
+      batchAnswers.map((answer) => answer.questionClass),
+    );
+    const evidenceSummary = summarizeCounts(
+      batchAnswers.map((answer) => answer.evidencePackStatus),
+    );
+    const followUp = batchAnswers
+      .map((answer) => {
+        const reasons: string[] = [];
+        if (answer.questionClass === "unknown_or_ambiguous") {
+          reasons.push("question_class_ambiguous");
+        }
+        if (answer.failOpenTriggered) {
+          reasons.push("fail_open_triggered");
+        }
+        if (answer.evidencePackStatus === "partial") {
+          reasons.push("evidence_pack_partial");
+        }
+        return {
+          ...answer,
+          reasons,
+        };
+      })
+      .filter((answer) => answer.reasons.length > 0);
+
+    lines.push("");
+    lines.push("## Class Summary");
+    lines.push("");
+    lines.push("| class | count |");
+    lines.push("| --- | --- |");
+    for (const item of classSummary) {
+      lines.push(`| ${item.key} | ${item.count} |`);
+    }
+
+    lines.push("");
+    lines.push("## Evidence-Pack Summary");
+    lines.push("");
+    lines.push("| status | count |");
+    lines.push("| --- | --- |");
+    for (const item of evidenceSummary) {
+      lines.push(`| ${item.key} | ${item.count} |`);
+    }
+
+    lines.push("");
+    lines.push("## Needs Follow-Up");
+    lines.push("");
+    if (followUp.length === 0) {
+      lines.push("None.");
+    } else {
+      lines.push("| digest | class | evidence | fail-open | reasons | question |");
+      lines.push("| --- | --- | --- | --- | --- | --- |");
+      for (const answer of followUp) {
+        lines.push(
+          `| ${answer.questionDigest} | ${answer.questionClass} | ${answer.evidencePackStatus} | ${answer.failOpenTriggered ? "yes" : "no"} | ${escapeTableCell(answer.reasons.join(", "))} | ${escapeTableCell(answer.question)} |`,
+        );
+      }
+    }
+
     if (strict) {
       lines.push("");
       lines.push("## Strict Summary");
@@ -595,6 +907,7 @@ async function renderAnswer(input: {
 }): Promise<{
   markdown: string;
   json: KnowledgeAnswerJson;
+  classification: KnowledgeQuestionClassification;
   strictEvaluation: StrictEvaluation;
 }> {
   const query = buildQueryProfile(input.question);
@@ -614,6 +927,13 @@ async function renderAnswer(input: {
     entries: entryMatches,
     analyzeRepoRootAbs: input.analyzeRepoRootAbs,
     queryTokens: query.tokens,
+  });
+  const evidencePack = await buildEvidencePack({
+    query,
+    entryMatches,
+    artifactEvidenceByEntry,
+    codeRootAbs: input.codeRootAbs,
+    analyzeRepoRootAbs: input.analyzeRepoRootAbs,
   });
   const confidence = computeAnswerConfidence(
     entryMatches,
@@ -643,6 +963,12 @@ async function renderAnswer(input: {
     entryMatches,
     insightMatches,
   );
+  const failOpen = buildFailOpenDecision({
+    query,
+    confidence,
+    evidencePack,
+    entryMatches,
+  });
   const limits = [
     "This answer is deterministic and grounded only in existing Prism knowledge artifacts.",
     "It does not infer facts that are absent from artifact evidence.",
@@ -654,6 +980,13 @@ async function renderAnswer(input: {
   lines.push("");
   lines.push(`- question: ${input.question}`);
   lines.push(`- question digest: ${questionDigest}`);
+  lines.push(`- question class: ${query.questionClass}`);
+  lines.push(
+    `- class confidence: ${query.classConfidence} (score=${query.classScore}, delta=${query.classDelta})`,
+  );
+  if (query.classMatchedRules.length > 0) {
+    lines.push(`- class rules: ${query.classMatchedRules.join(", ")}`);
+  }
   lines.push(`- intent: ${query.intent}`);
   if (query.matchedIntentKeywords.length > 0) {
     lines.push(`- intent keywords: ${query.matchedIntentKeywords.join(", ")}`);
@@ -664,10 +997,35 @@ async function renderAnswer(input: {
   lines.push(`- schema version: ${input.pack.schemaVersion}`);
   lines.push(`- top limit: ${input.top}`);
   lines.push(`- confidence: ${confidence.level} (${confidence.score}/100)`);
+  lines.push(`- evidence pack: ${evidencePack.status}`);
+  lines.push(`- requirements: ${evidencePack.requirements.join(", ")}`);
+  lines.push(`- satisfied: ${evidencePack.satisfied.join(", ") || "none"}`);
+  lines.push(`- missing: ${evidencePack.missing.join(", ") || "none"}`);
+  lines.push(`- fail-open: ${failOpen.triggered ? "triggered" : "not-triggered"}`);
   lines.push("");
-  lines.push("## Answer");
+  lines.push("## Executive Answer");
   lines.push("");
   lines.push(summary);
+  lines.push("");
+  lines.push(
+    ...renderHumanFirstSections({
+      questionClass: query.questionClass,
+      topicCandidates: query.topicCandidates,
+      entries: entryMatches,
+      insights: insightMatches,
+      warnings,
+      evidencePack,
+      artifactEvidenceByEntry,
+    }),
+  );
+  if (failOpen.triggered) {
+    lines.push("");
+    lines.push("## Fail-Open Guidance");
+    lines.push("");
+    lines.push(...renderFailOpenGuidance(failOpen));
+  }
+  lines.push("");
+  lines.push("## Raw Evidence Appendix");
   lines.push("");
   lines.push("## Auth Flow");
   lines.push("");
@@ -724,6 +1082,9 @@ async function renderAnswer(input: {
         `| ${index + 1} | ${match.run.configDigest} | ${match.entry.name} | ${match.entry.status} | ${match.entry.path} | \`${match.entry.finalIndex}\` | \`${match.entry.finalReport}\` |`,
       );
     }
+    lines.push(
+      `Showing ${evidenceMapRows.length} of ${entryMatches.length} ranked entries.`,
+    );
   }
   lines.push("");
   lines.push("## Evidence Entries");
@@ -790,6 +1151,21 @@ async function renderAnswer(input: {
     lines.push(...warnings.map((warning) => `- ${warning}`));
   }
   lines.push("");
+  lines.push("## Evidence Pack");
+  lines.push("");
+  lines.push(`- status: ${evidencePack.status}`);
+  lines.push(`- requirements: ${evidencePack.requirements.join(", ")}`);
+  lines.push(`- satisfied: ${evidencePack.satisfied.join(", ") || "none"}`);
+  lines.push(`- missing: ${evidencePack.missing.join(", ") || "none"}`);
+  lines.push(
+    `- code-root fallback: used=${evidencePack.codeRootFallback.used}, scanned=${evidencePack.codeRootFallback.scannedFiles}, matched=${evidencePack.codeRootFallback.matchedFiles}, limits=(max_files=${evidencePack.codeRootFallback.maxFiles}, max_bytes=${evidencePack.codeRootFallback.maxBytesPerFile})`,
+  );
+  if (evidencePack.codeRootFallback.matchedPaths.length > 0) {
+    lines.push(
+      `- fallback matched paths: ${evidencePack.codeRootFallback.matchedPaths.join(", ")}`,
+    );
+  }
+  lines.push("");
   lines.push("## Staleness & Contradiction Signals");
   lines.push("");
   lines.push(
@@ -810,6 +1186,12 @@ async function renderAnswer(input: {
     schemaVersion: 1,
     question: input.question,
     questionDigest,
+    questionClass: query.questionClass,
+    questionClassConfidence: query.classConfidence,
+    questionClassScore: query.classScore,
+    questionClassDelta: query.classDelta,
+    questionClassRules: query.classMatchedRules,
+    topicCandidates: query.topicCandidates,
     intent: query.intent,
     intentKeywords: query.matchedIntentKeywords,
     generatedAt: input.generatedAt,
@@ -876,22 +1258,345 @@ async function renderAnswer(input: {
       contradictionSignals,
       relevantSignals,
     },
+    evidencePack: {
+      status: evidencePack.status,
+      requirements: evidencePack.requirements,
+      satisfied: evidencePack.satisfied,
+      missing: evidencePack.missing,
+      sources: evidencePack.sources.map((source) => ({
+        kind: source.kind,
+        path: source.path,
+        usedFor: source.usedFor,
+        exists: source.exists,
+        note: source.note,
+      })),
+      codeRootFallback: evidencePack.codeRootFallback,
+    },
+    failOpen: {
+      triggered: failOpen.triggered,
+      reasons: failOpen.reasons,
+      candidateTopics: failOpen.candidateTopics,
+      candidateEntries: failOpen.candidateEntries,
+      missingRequirements: failOpen.missingRequirements,
+    },
     limits,
   };
+
+  const classification = KnowledgeQuestionClassificationSchema.parse({
+    schemaVersion: 1 as const,
+    generatedAt: input.generatedAt,
+    question: input.question,
+    questionDigest,
+    normalizedQuestion: normalizeText(input.question),
+    class: query.questionClass,
+    confidence: query.classConfidence,
+    score: query.classScore,
+    delta: query.classDelta,
+    matchedRules: query.classMatchedRules,
+    classScores: query.classScores,
+    topicCandidates: query.topicCandidates,
+  });
 
   return {
     markdown: `${lines.join("\n")}\n`,
     json,
+    classification,
     strictEvaluation: {
       question: input.question,
       questionDigest,
+      questionClass: query.questionClass,
+      questionClassConfidence: query.classConfidence,
       confidence,
+      evidencePackStatus: evidencePack.status,
+      missingEvidenceRequirements: evidencePack.missing,
+      failOpenTriggered: failOpen.triggered,
+      failOpenReasons: failOpen.reasons,
       missingCriticalArtifacts: collectCriticalArtifactGaps(
         entryMatches,
         artifactEvidenceByEntry,
       ),
     },
   };
+}
+
+async function buildEvidencePack(input: {
+  query: QueryProfile;
+  entryMatches: EntryMatch[];
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>;
+  codeRootAbs: string;
+  analyzeRepoRootAbs: string;
+}): Promise<EvidencePack> {
+  const requirements = requirementsForQuestionClass(input.query.questionClass);
+  const coverage = evaluateAnalyzeCoverage({
+    requirements,
+    entryMatches: input.entryMatches,
+    artifactEvidenceByEntry: input.artifactEvidenceByEntry,
+    analyzeRepoRootAbs: input.analyzeRepoRootAbs,
+  });
+  let missing = requirements.filter(
+    (requirement) => !coverage.satisfied.has(requirement),
+  );
+  const fallback = await runBoundedCodeRootFallback({
+    missing,
+    query: input.query,
+    codeRootAbs: input.codeRootAbs,
+    entryMatches: input.entryMatches,
+  });
+
+  for (const requirement of fallback.satisfied) {
+    coverage.satisfied.add(requirement);
+  }
+  missing = requirements.filter((requirement) => !coverage.satisfied.has(requirement));
+
+  return {
+    status: missing.length === 0 ? "complete" : "partial",
+    requirements,
+    satisfied: [...coverage.satisfied].sort((a, b) => a.localeCompare(b)),
+    missing,
+    sources: [...coverage.sources, ...fallback.sources].sort(
+      (a, b) =>
+        a.kind.localeCompare(b.kind) ||
+        a.path.localeCompare(b.path) ||
+        a.usedFor.join(",").localeCompare(b.usedFor.join(",")),
+    ),
+    codeRootFallback: fallback.stats,
+  };
+}
+
+function requirementsForQuestionClass(
+  questionClass: KnowledgeQuestionClass,
+): EvidenceRequirement[] {
+  if (questionClass === "architecture_storyline") {
+    return ["entrypoints", "building_blocks", "dependency_edges", "references"];
+  }
+  if (questionClass === "entrypoint_trace") {
+    return ["entrypoints", "dependency_edges", "references"];
+  }
+  if (questionClass === "dependency_flow") {
+    return ["dependency_edges", "references"];
+  }
+  if (questionClass === "building_blocks") {
+    return ["building_blocks", "references"];
+  }
+  if (questionClass === "reference_lookup") {
+    return ["references"];
+  }
+  if (questionClass === "change_guidance") {
+    return ["entrypoints", "building_blocks", "references"];
+  }
+  return ["references"];
+}
+
+function evaluateAnalyzeCoverage(input: {
+  requirements: EvidenceRequirement[];
+  entryMatches: EntryMatch[];
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>;
+  analyzeRepoRootAbs: string;
+}): {
+  satisfied: Set<EvidenceRequirement>;
+  sources: EvidencePack["sources"];
+} {
+  const satisfied = new Set<EvidenceRequirement>();
+  const sources: EvidencePack["sources"] = [];
+
+  const bestEntries = input.entryMatches.slice(0, Math.max(1, EVIDENCE_MAP_LIMIT));
+  for (const match of bestEntries) {
+    const artifact =
+      input.artifactEvidenceByEntry.get(
+        entryRunKey(match.run.configDigest, match.entry),
+      ) ?? emptyArtifactEvidence(match.entry.finalIndex);
+
+    const graphPath = resolvePath(
+      input.analyzeRepoRootAbs,
+      `${match.entry.workdir}/graph/graph.json`,
+    );
+    const repoIndexPath = resolvePath(input.analyzeRepoRootAbs, match.entry.repoIndex);
+    const finalIndexPath = resolvePath(input.analyzeRepoRootAbs, match.entry.finalIndex);
+    const finalReportPath = resolvePath(
+      input.analyzeRepoRootAbs,
+      match.entry.finalReport,
+    );
+
+    sources.push({
+      kind: "analyze_artifact",
+      path: toPosixPath(finalIndexPath),
+      usedFor: ["entrypoints", "references"],
+      exists: artifact.finalIndexExists,
+      note: `${match.run.configDigest}/${match.entry.name}`,
+    });
+    sources.push({
+      kind: "analyze_artifact",
+      path: toPosixPath(finalReportPath),
+      usedFor: ["references"],
+      exists: existsSync(finalReportPath),
+      note: `${match.run.configDigest}/${match.entry.name}`,
+    });
+    sources.push({
+      kind: "analyze_artifact",
+      path: toPosixPath(repoIndexPath),
+      usedFor: ["building_blocks"],
+      exists: match.repoIndexSignals.exists,
+      note: `${match.run.configDigest}/${match.entry.name}`,
+    });
+    sources.push({
+      kind: "analyze_artifact",
+      path: toPosixPath(graphPath),
+      usedFor: ["dependency_edges"],
+      exists: match.graphStats.exists,
+      note: `${match.run.configDigest}/${match.entry.name}`,
+    });
+
+    if (artifact.finalIndexExists) {
+      satisfied.add("entrypoints");
+      satisfied.add("references");
+    }
+    if (match.repoIndexSignals.exists && match.repoIndexSignals.symbolCount > 0) {
+      satisfied.add("building_blocks");
+      satisfied.add("references");
+    }
+    if (match.graphStats.exists && match.graphStats.edgeCount > 0) {
+      satisfied.add("dependency_edges");
+      satisfied.add("references");
+    }
+    if (match.codeExists) {
+      sources.push({
+        kind: "code_root_file",
+        path: toPosixPath(match.codePath),
+        usedFor: ["references"],
+        exists: true,
+        note: `${match.run.configDigest}/${match.entry.name}`,
+      });
+      satisfied.add("references");
+    }
+  }
+
+  return {
+    satisfied: new Set(
+      [...satisfied].filter((requirement) => input.requirements.includes(requirement)),
+    ),
+    sources,
+  };
+}
+
+async function runBoundedCodeRootFallback(input: {
+  missing: EvidenceRequirement[];
+  query: QueryProfile;
+  codeRootAbs: string;
+  entryMatches: EntryMatch[];
+}): Promise<{
+  satisfied: Set<EvidenceRequirement>;
+  sources: EvidencePack["sources"];
+  stats: EvidencePack["codeRootFallback"];
+}> {
+  const required = new Set(input.missing);
+  const satisfied = new Set<EvidenceRequirement>();
+  const sources: EvidencePack["sources"] = [];
+  const stats: EvidencePack["codeRootFallback"] = {
+    used: required.size > 0,
+    maxFiles: CODE_FALLBACK_MAX_FILES,
+    maxBytesPerFile: CODE_FALLBACK_MAX_BYTES_PER_FILE,
+    scannedFiles: 0,
+    matchedFiles: 0,
+    matchedPaths: [],
+  };
+  if (required.size === 0) {
+    return { satisfied, sources, stats };
+  }
+
+  const candidates = buildCodeFallbackCandidates({
+    query: input.query,
+    codeRootAbs: input.codeRootAbs,
+    entryMatches: input.entryMatches,
+  }).slice(0, CODE_FALLBACK_MAX_FILES);
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    stats.scannedFiles += 1;
+    let text: string;
+    try {
+      text = await readFile(candidate, "utf8");
+    } catch {
+      continue;
+    }
+    const bounded = text.slice(0, CODE_FALLBACK_MAX_BYTES_PER_FILE);
+    const normalized = normalizeText(bounded);
+    const tokens = input.query.tokens;
+    const tokenMatchCount = tokens.reduce(
+      (count, token) => (normalized.includes(token) ? count + 1 : count),
+      0,
+    );
+    const usedFor: EvidenceRequirement[] = [];
+    if (required.has("references") && tokenMatchCount > 0) {
+      usedFor.push("references");
+      satisfied.add("references");
+    }
+    if (
+      required.has("entrypoints") &&
+      containsAny(normalized, ["export default", "route"])
+    ) {
+      usedFor.push("entrypoints");
+      satisfied.add("entrypoints");
+    }
+    if (
+      required.has("building_blocks") &&
+      containsAny(normalized, ["class ", "function ", "const ", "interface ", "type "])
+    ) {
+      usedFor.push("building_blocks");
+      satisfied.add("building_blocks");
+    }
+    if (
+      required.has("dependency_edges") &&
+      containsAny(normalized, ["import ", "from ", "use", "call", "service"])
+    ) {
+      usedFor.push("dependency_edges");
+      satisfied.add("dependency_edges");
+    }
+
+    if (usedFor.length > 0) {
+      stats.matchedFiles += 1;
+      stats.matchedPaths.push(toPosixPath(candidate));
+      sources.push({
+        kind: "code_root_file",
+        path: toPosixPath(candidate),
+        usedFor: [...new Set(usedFor)].sort((a, b) => a.localeCompare(b)),
+        exists: true,
+        note: `token_matches=${tokenMatchCount}`,
+      });
+    }
+
+    const remaining = [...required].filter((item) => !satisfied.has(item));
+    if (remaining.length === 0) break;
+  }
+
+  return { satisfied, sources, stats };
+}
+
+function buildCodeFallbackCandidates(input: {
+  query: QueryProfile;
+  codeRootAbs: string;
+  entryMatches: EntryMatch[];
+}): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (path: string) => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    result.push(path);
+  };
+
+  for (const candidate of tokenizeRawQuestion(input.query.question)) {
+    if (!isPathLikeToken(candidate)) continue;
+    const resolved = resolvePath(input.codeRootAbs, candidate);
+    add(resolved);
+  }
+
+  for (const match of input.entryMatches) {
+    add(match.codePath);
+    if (result.length >= CODE_FALLBACK_MAX_FILES) break;
+  }
+
+  return result;
 }
 
 function buildSummaryParagraph(
@@ -918,6 +1623,368 @@ function buildSummaryParagraph(
           .join("; ")}.`
       : "";
   return `Primary evidence points to "${primary.entry.name}" (${primary.entry.path}) as the closest match for "${question}".${relatedText}${insightText}`;
+}
+
+function renderHumanFirstSections(input: {
+  questionClass: KnowledgeQuestionClass;
+  topicCandidates: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
+  entries: EntryMatch[];
+  insights: InsightMatch[];
+  warnings: string[];
+  evidencePack: EvidencePack;
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>;
+}): string[] {
+  const lines: string[] = [];
+  lines.push(...renderHowToReadSection(input));
+
+  if (input.questionClass === "unknown_or_ambiguous") {
+    lines.push("");
+    lines.push("## Candidate Focus Areas");
+    lines.push("");
+    if (input.topicCandidates.length === 0) {
+      lines.push("No strong candidates detected.");
+    } else {
+      for (const candidate of input.topicCandidates.slice(0, HUMAN_SECTION_LIMIT)) {
+        lines.push(
+          `- ${candidate.label} | score=${candidate.score} | reasons=${candidate.reasons.join(", ")}`,
+        );
+      }
+      if (input.topicCandidates.length > HUMAN_SECTION_LIMIT) {
+        lines.push(
+          `- showing ${HUMAN_SECTION_LIMIT} of ${input.topicCandidates.length} candidates`,
+        );
+      }
+    }
+    lines.push("");
+    lines.push("## Gaps / Uncertainty");
+    lines.push("");
+    lines.push(...renderGapsList(input.evidencePack, input.warnings));
+    lines.push("");
+    lines.push("## Proof References");
+    lines.push("");
+    lines.push(
+      ...renderProofReferences(
+        input.entries,
+        input.artifactEvidenceByEntry,
+        HUMAN_SECTION_LIMIT,
+      ),
+    );
+    return lines;
+  }
+
+  if (
+    input.questionClass === "architecture_storyline" ||
+    input.questionClass === "change_guidance"
+  ) {
+    lines.push("");
+    lines.push("## Entry Files");
+    lines.push("");
+    lines.push(...renderEntryFilesList(input.entries, HUMAN_SECTION_LIMIT));
+    lines.push("");
+    lines.push("## Core Building Blocks");
+    lines.push("");
+    lines.push(...renderBuildingBlocksList(input.entries, HUMAN_SECTION_LIMIT));
+    lines.push("");
+    lines.push("## Dependency / Control Flow");
+    lines.push("");
+    lines.push(...renderDependencyFlowList(input.entries, HUMAN_SECTION_LIMIT));
+  } else if (input.questionClass === "entrypoint_trace") {
+    lines.push("");
+    lines.push("## Entry Files");
+    lines.push("");
+    lines.push(...renderEntryFilesList(input.entries, HUMAN_SECTION_LIMIT));
+    lines.push("");
+    lines.push("## Dependency / Control Flow");
+    lines.push("");
+    lines.push(...renderDependencyFlowList(input.entries, HUMAN_SECTION_LIMIT));
+  } else if (input.questionClass === "dependency_flow") {
+    lines.push("");
+    lines.push("## Dependency / Control Flow");
+    lines.push("");
+    lines.push(...renderDependencyFlowList(input.entries, HUMAN_SECTION_LIMIT));
+    lines.push("");
+    lines.push("## Entry Files");
+    lines.push("");
+    lines.push(...renderEntryFilesList(input.entries, HUMAN_SECTION_LIMIT));
+  } else if (input.questionClass === "building_blocks") {
+    lines.push("");
+    lines.push("## Core Building Blocks");
+    lines.push("");
+    lines.push(...renderBuildingBlocksList(input.entries, HUMAN_SECTION_LIMIT));
+    lines.push("");
+    lines.push("## Entry Files");
+    lines.push("");
+    lines.push(...renderEntryFilesList(input.entries, HUMAN_SECTION_LIMIT));
+  } else if (input.questionClass === "reference_lookup") {
+    lines.push("");
+    lines.push("## Entry Files");
+    lines.push("");
+    lines.push(...renderEntryFilesList(input.entries, HUMAN_SECTION_LIMIT));
+  }
+
+  lines.push("");
+  lines.push("## Failure Paths");
+  lines.push("");
+  lines.push(...renderFailurePathNarrative(input.entries, input.insights));
+  lines.push("");
+  lines.push("## Gaps / Uncertainty");
+  lines.push("");
+  lines.push(...renderGapsList(input.evidencePack, input.warnings));
+  lines.push("");
+  lines.push("## Proof References");
+  lines.push("");
+  lines.push(
+    ...renderProofReferences(
+      input.entries,
+      input.artifactEvidenceByEntry,
+      HUMAN_SECTION_LIMIT,
+    ),
+  );
+
+  return lines;
+}
+
+function renderHowToReadSection(input: {
+  questionClass: KnowledgeQuestionClass;
+  evidencePack: EvidencePack;
+}): string[] {
+  const lines = ["## How To Read This Answer", ""];
+  const mode = input.questionClass;
+  lines.push(
+    `- mode: ${mode}; evidence status: ${input.evidencePack.status}; requirements: ${input.evidencePack.requirements.join(", ")}`,
+  );
+  if (mode === "architecture_storyline") {
+    lines.push(
+      "- Read in order: Entry Files -> Core Building Blocks -> Dependency / Control Flow -> Failure Paths -> Proof References.",
+    );
+  } else if (mode === "entrypoint_trace") {
+    lines.push(
+      "- Read in order: Entry Files -> Dependency / Control Flow -> Proof References.",
+    );
+  } else if (mode === "dependency_flow") {
+    lines.push(
+      "- Read in order: Dependency / Control Flow -> Entry Files -> Proof References.",
+    );
+  } else if (mode === "building_blocks") {
+    lines.push(
+      "- Read in order: Core Building Blocks -> Entry Files -> Proof References.",
+    );
+  } else if (mode === "reference_lookup") {
+    lines.push("- Read in order: Entry Files -> Proof References.");
+  } else if (mode === "change_guidance") {
+    lines.push(
+      "- Read in order: Entry Files -> Core Building Blocks -> Dependency / Control Flow -> Gaps / Uncertainty -> Proof References.",
+    );
+  } else {
+    lines.push(
+      "- Classification is ambiguous; inspect Candidate Focus Areas then Proof References.",
+    );
+  }
+  return lines;
+}
+
+function renderEntryFilesList(entries: EntryMatch[], limit: number): string[] {
+  if (entries.length === 0) return ["No ranked entry files available."];
+  const selected = entries.slice(0, limit);
+  const lines = selected.map(
+    (match, index) =>
+      `${index + 1}. \`${match.entry.path}\` (${match.entry.name}, run=${match.run.configDigest}, status=${match.entry.status})`,
+  );
+  if (entries.length > limit) {
+    lines.push(`- showing ${limit} of ${entries.length} ranked entries`);
+  }
+  return lines;
+}
+
+function renderBuildingBlocksList(entries: EntryMatch[], limit: number): string[] {
+  if (entries.length === 0) return ["No building-block signals available."];
+  const selected = entries.slice(0, limit);
+  const lines = selected.map((match) => {
+    const repo = match.repoIndexSignals;
+    return `- ${match.entry.name}: files=${repo.fileCount}, symbols=${repo.symbolCount}, service=${repo.serviceSymbols}, hooks=${repo.hookSymbols}, components=${repo.componentSymbols}`;
+  });
+  if (entries.length > limit) {
+    lines.push(`- showing ${limit} of ${entries.length} ranked entries`);
+  }
+  return lines;
+}
+
+function renderDependencyFlowList(entries: EntryMatch[], limit: number): string[] {
+  if (entries.length === 0) return ["No dependency-flow signals available."];
+  const selected = entries.slice(0, limit);
+  const lines = selected.map((match) => {
+    const graph = match.graphStats;
+    return `- ${match.entry.name}: edges=${graph.edgeCount}, calls=${graph.calls}, service_calls=${graph.serviceCalls}, routes=${graph.routes}, context_edges=${graph.contextEdges}, store_edges=${graph.storeEdges}`;
+  });
+  if (entries.length > limit) {
+    lines.push(`- showing ${limit} of ${entries.length} ranked entries`);
+  }
+  return lines;
+}
+
+function renderFailurePathNarrative(
+  entries: EntryMatch[],
+  insights: InsightMatch[],
+): string[] {
+  const failedEntries = entries.filter((entry) => entry.entry.status === "failed");
+  const failureInsights = insights.filter((insight) => isFailureInsight(insight.insight));
+  const lines: string[] = [];
+  if (failedEntries.length === 0 && failureInsights.length === 0) {
+    return ["No failure-focused evidence surfaced in top-ranked entries."];
+  }
+  for (const entry of failedEntries.slice(0, HUMAN_SECTION_LIMIT)) {
+    lines.push(
+      `- failed entry: ${entry.entry.name} (${entry.entry.path}) run=${entry.run.configDigest}`,
+    );
+  }
+  for (const insight of failureInsights.slice(0, HUMAN_SECTION_LIMIT)) {
+    lines.push(
+      `- insight: ${insight.insight.title} (${insight.insight.severity}) in ${insight.insight.entry}`,
+    );
+  }
+  return lines;
+}
+
+function renderGapsList(evidencePack: EvidencePack, warnings: string[]): string[] {
+  const lines: string[] = [];
+  if (evidencePack.missing.length === 0 && warnings.length === 0) {
+    return ["No explicit evidence gaps for the current requirements."];
+  }
+  for (const missing of evidencePack.missing) {
+    lines.push(`- missing requirement: ${missing}`);
+  }
+  for (const warning of warnings.slice(0, HUMAN_SECTION_LIMIT)) {
+    lines.push(`- warning: ${warning}`);
+  }
+  if (warnings.length > HUMAN_SECTION_LIMIT) {
+    lines.push(`- showing ${HUMAN_SECTION_LIMIT} of ${warnings.length} warnings`);
+  }
+  return lines;
+}
+
+function renderProofReferences(
+  entries: EntryMatch[],
+  artifactEvidenceByEntry: Map<string, EntryArtifactEvidence>,
+  limit: number,
+): string[] {
+  if (entries.length === 0) return ["No proof references available."];
+  const selected = entries.slice(0, limit);
+  const lines: string[] = [];
+  for (const match of selected) {
+    const artifact =
+      artifactEvidenceByEntry.get(entryRunKey(match.run.configDigest, match.entry)) ??
+      emptyArtifactEvidence(match.entry.finalIndex);
+    lines.push(
+      `- ${match.entry.name}: start_here=\`${match.entry.finalIndex}\`, detail=\`${match.entry.finalReport}\`, service_flow=\`${deriveServiceFlowPath(match.entry.finalIndex)}\`, code_file=\`${match.codePath}\` (${match.codeExists ? "exists" : "missing"}), final_excerpt=${renderSnippetValue(artifact.finalIndexSnippet, artifact.finalIndexExists)}`,
+    );
+  }
+  if (entries.length > limit) {
+    lines.push(`- showing ${limit} of ${entries.length} ranked references`);
+  }
+  return lines;
+}
+
+function buildFailOpenDecision(input: {
+  query: QueryProfile;
+  confidence: { level: "low" | "medium" | "high"; score: number };
+  evidencePack: EvidencePack;
+  entryMatches: EntryMatch[];
+}): {
+  triggered: boolean;
+  reasons: string[];
+  candidateTopics: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
+  candidateEntries: Array<{
+    run: string;
+    name: string;
+    path: string;
+    score: number;
+  }>;
+  missingRequirements: string[];
+} {
+  const reasons: string[] = [];
+  if (input.query.questionClass === "unknown_or_ambiguous") {
+    reasons.push("question_class_ambiguous");
+  }
+  if (input.query.classConfidence === "none") {
+    reasons.push("class_confidence_none");
+  }
+  if (input.evidencePack.status === "partial") {
+    reasons.push("evidence_pack_partial");
+  }
+  if (input.confidence.level === "low") {
+    reasons.push("answer_confidence_low");
+  }
+  const triggered = reasons.length > 0;
+  return {
+    triggered,
+    reasons,
+    candidateTopics: input.query.topicCandidates.slice(0, HUMAN_SECTION_LIMIT),
+    candidateEntries: input.entryMatches.slice(0, HUMAN_SECTION_LIMIT).map((entry) => ({
+      run: entry.run.configDigest,
+      name: entry.entry.name,
+      path: entry.entry.path,
+      score: entry.score,
+    })),
+    missingRequirements: input.evidencePack.missing,
+  };
+}
+
+function renderFailOpenGuidance(input: {
+  triggered: boolean;
+  reasons: string[];
+  candidateTopics: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
+  candidateEntries: Array<{
+    run: string;
+    name: string;
+    path: string;
+    score: number;
+  }>;
+  missingRequirements: string[];
+}): string[] {
+  if (!input.triggered) {
+    return ["Fail-open not required."];
+  }
+  const lines: string[] = [];
+  lines.push(`- reasons: ${input.reasons.join(", ")}`);
+  if (input.missingRequirements.length > 0) {
+    lines.push(`- missing requirements: ${input.missingRequirements.join(", ")}`);
+  }
+  lines.push("- candidate topics:");
+  if (input.candidateTopics.length === 0) {
+    lines.push("  - none");
+  } else {
+    for (const candidate of input.candidateTopics) {
+      lines.push(
+        `  - ${candidate.label} (score=${candidate.score}, reasons=${candidate.reasons.join(", ")})`,
+      );
+    }
+  }
+  lines.push("- candidate entries:");
+  if (input.candidateEntries.length === 0) {
+    lines.push("  - none");
+  } else {
+    for (const entry of input.candidateEntries) {
+      lines.push(
+        `  - ${entry.name} | ${entry.path} | run=${entry.run} | score=${entry.score}`,
+      );
+    }
+  }
+  lines.push(
+    "- next query suggestion: specify a concrete file path, symbol, or exact subsystem name.",
+  );
+  return lines;
 }
 
 function selectSectionEntries(
@@ -1181,7 +2248,224 @@ export function classifyIntent(question: string): KnowledgeAnswerIntent {
   return "general";
 }
 
+function classifyQuestion(question: string): {
+  questionClass: KnowledgeQuestionClass;
+  confidence: KnowledgeQuestionClassConfidence;
+  score: number;
+  delta: number;
+  matchedRules: string[];
+  classScores: Array<{
+    class: KnowledgeQuestionClass;
+    score: number;
+    matchedRules: string[];
+  }>;
+  topicCandidates: Array<{
+    label: string;
+    score: number;
+    reasons: string[];
+  }>;
+} {
+  const normalizedQuestion = normalizeText(question);
+  const rawTokens = tokenizeRawQuestion(question);
+  const normalizedTokens = tokenize(question);
+  const hasPathAnchor = rawTokens.some(isPathLikeToken);
+  const hasSymbolAnchor = rawTokens.some(isSymbolLikeToken);
+  const hasRouteAnchor = rawTokens.some(isRouteLikeToken);
+  const topicCandidates = buildTopicCandidates(rawTokens, normalizedTokens);
+  const hasDomainTopic = topicCandidates.some((candidate) =>
+    candidate.reasons.some((reason) => reason.startsWith("domain-token:")),
+  );
+
+  const classScores = new Map<PrimaryQuestionClass, number>();
+  const classMatchedRules = new Map<PrimaryQuestionClass, string[]>();
+  for (const cls of QUESTION_CLASS_ORDER) {
+    classScores.set(cls, 0);
+    classMatchedRules.set(cls, []);
+  }
+
+  let matchedVerbSignal = false;
+  for (const rule of GLOBAL_VERB_RULES) {
+    if (matchesAnyPhrase(normalizedQuestion, rule.phrases)) {
+      matchedVerbSignal = true;
+      applyQuestionClassRule(
+        classScores,
+        classMatchedRules,
+        rule.target,
+        rule.weight,
+        rule.id,
+      );
+    }
+  }
+
+  for (const rule of CLASS_PHRASE_RULES) {
+    if (matchesAnyWildcardPhrase(normalizedQuestion, rule.phrases)) {
+      applyQuestionClassRule(
+        classScores,
+        classMatchedRules,
+        rule.target,
+        rule.weight,
+        rule.id,
+      );
+    }
+  }
+
+  if (hasPathAnchor) {
+    applyQuestionClassRule(
+      classScores,
+      classMatchedRules,
+      "reference_lookup",
+      18,
+      "path_anchor:reference_lookup",
+    );
+    applyQuestionClassRule(
+      classScores,
+      classMatchedRules,
+      "dependency_flow",
+      8,
+      "path_anchor:dependency_flow",
+    );
+  }
+
+  if (hasSymbolAnchor) {
+    applyQuestionClassRule(
+      classScores,
+      classMatchedRules,
+      "reference_lookup",
+      16,
+      "symbol_anchor:reference_lookup",
+    );
+    applyQuestionClassRule(
+      classScores,
+      classMatchedRules,
+      "dependency_flow",
+      10,
+      "symbol_anchor:dependency_flow",
+    );
+  }
+
+  if (hasRouteAnchor) {
+    applyQuestionClassRule(
+      classScores,
+      classMatchedRules,
+      "entrypoint_trace",
+      16,
+      "route_anchor:entrypoint_trace",
+    );
+  }
+
+  if (hasDomainTopic) {
+    for (const cls of QUESTION_CLASS_ORDER) {
+      applyQuestionClassRule(classScores, classMatchedRules, cls, 8, "domain_token:all");
+    }
+  }
+
+  if (normalizedTokens.length < 2) {
+    for (const cls of QUESTION_CLASS_ORDER) {
+      applyQuestionClassRule(
+        classScores,
+        classMatchedRules,
+        cls,
+        -20,
+        "penalty:short_question",
+      );
+    }
+  }
+
+  if (!matchedVerbSignal && !hasPathAnchor && !hasSymbolAnchor && !hasRouteAnchor) {
+    for (const cls of QUESTION_CLASS_ORDER) {
+      applyQuestionClassRule(
+        classScores,
+        classMatchedRules,
+        cls,
+        -18,
+        "penalty:no_signal",
+      );
+    }
+  }
+
+  const scored = QUESTION_CLASS_ORDER.map((cls) => ({
+    class: cls,
+    score: classScores.get(cls) ?? 0,
+    matchedRules: (classMatchedRules.get(cls) ?? [])
+      .slice()
+      .sort((a, b) => a.localeCompare(b)),
+  })).sort(
+    (a, b) =>
+      b.score - a.score || questionClassRank(a.class) - questionClassRank(b.class),
+  );
+
+  const top = scored[0] ?? {
+    class: "architecture_storyline" as PrimaryQuestionClass,
+    score: 0,
+    matchedRules: [],
+  };
+  const second = scored[1] ?? {
+    class: "entrypoint_trace" as PrimaryQuestionClass,
+    score: 0,
+    matchedRules: [],
+  };
+  const delta = Math.max(0, top.score - second.score);
+
+  let questionClass: KnowledgeQuestionClass = top.class;
+  if (top.score < 28) {
+    questionClass = "unknown_or_ambiguous";
+  } else if (top.score === second.score) {
+    questionClass = breakClassTie(top.class, second.class);
+  } else if (delta <= 4) {
+    questionClass = "unknown_or_ambiguous";
+  }
+
+  let confidence: KnowledgeQuestionClassConfidence = "none";
+  if (questionClass !== "unknown_or_ambiguous") {
+    if (top.score >= 52 && delta >= 12) {
+      confidence = "high";
+    } else if (top.score >= 40 && delta >= 8) {
+      confidence = "medium";
+    } else if (top.score >= 28 && delta >= 5) {
+      confidence = "low";
+    } else {
+      confidence = "none";
+      questionClass = "unknown_or_ambiguous";
+    }
+  }
+
+  const classScoreRows: Array<{
+    class: KnowledgeQuestionClass;
+    score: number;
+    matchedRules: string[];
+  }> = scored.map((item) => ({
+    class: item.class,
+    score: item.score,
+    matchedRules: item.matchedRules,
+  }));
+  classScoreRows.push({
+    class: "unknown_or_ambiguous",
+    score: questionClass === "unknown_or_ambiguous" ? top.score : 0,
+    matchedRules:
+      questionClass === "unknown_or_ambiguous"
+        ? ["selection:ambiguous_or_below_threshold"]
+        : [],
+  });
+
+  return {
+    questionClass,
+    confidence,
+    score: top.score,
+    delta,
+    matchedRules:
+      questionClass === "unknown_or_ambiguous"
+        ? ["selection:ambiguous_or_below_threshold"]
+        : top.matchedRules,
+    classScores: classScoreRows.sort(
+      (a, b) =>
+        b.score - a.score || questionClassRank(a.class) - questionClassRank(b.class),
+    ),
+    topicCandidates,
+  };
+}
+
 function buildQueryProfile(question: string): QueryProfile {
+  const classified = classifyQuestion(question);
   const intent = classifyIntent(question);
   const baseTokens = tokenize(question);
   const keywords = intent === "general" ? [] : INTENT_KEYWORDS[intent];
@@ -1192,9 +2476,167 @@ function buildQueryProfile(question: string): QueryProfile {
   return {
     question,
     intent,
+    questionClass: classified.questionClass,
+    classConfidence: classified.confidence,
+    classScore: classified.score,
+    classDelta: classified.delta,
+    classMatchedRules: classified.matchedRules,
+    classScores: classified.classScores,
+    topicCandidates: classified.topicCandidates,
     tokens,
     matchedIntentKeywords,
   };
+}
+
+export function classifyQuestionClass(question: string): KnowledgeQuestionClass {
+  return classifyQuestion(question).questionClass;
+}
+
+function tokenizeRawQuestion(question: string): string[] {
+  return question
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .map((token) => token.replace(/^[`"'([{]+|[`"')\]}:;,.!?]+$/g, ""))
+    .filter((token) => token.length > 0);
+}
+
+function isPathLikeToken(token: string): boolean {
+  return /[\\/]/.test(token) || /\.(tsx?|jsx?|md|json)$/i.test(token);
+}
+
+function isSymbolLikeToken(token: string): boolean {
+  return (
+    /^use[A-Z][A-Za-z0-9_]*$/.test(token) ||
+    /^[A-Z][A-Za-z0-9_]+$/.test(token) ||
+    /^[a-z]+[A-Z][A-Za-z0-9_]*$/.test(token) ||
+    /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/.test(token)
+  );
+}
+
+function isRouteLikeToken(token: string): boolean {
+  const normalized = normalizeText(token);
+  return (
+    normalized.includes("/api") ||
+    normalized.includes("route") ||
+    normalized.includes("endpoint") ||
+    normalized.includes("pages/")
+  );
+}
+
+function matchesAnyPhrase(normalizedQuestion: string, phrases: string[]): boolean {
+  return phrases.some((phrase) => normalizedQuestion.includes(normalizeText(phrase)));
+}
+
+function matchesAnyWildcardPhrase(
+  normalizedQuestion: string,
+  phrases: string[],
+): boolean {
+  return phrases.some((phrase) => {
+    const parts = phrase
+      .split("*")
+      .map((part) => normalizeText(part))
+      .filter((part) => part.length > 0);
+    if (parts.length === 0) return false;
+    let index = 0;
+    for (const part of parts) {
+      const next = normalizedQuestion.indexOf(part, index);
+      if (next === -1) return false;
+      index = next + part.length;
+    }
+    return true;
+  });
+}
+
+function applyQuestionClassRule(
+  classScores: Map<PrimaryQuestionClass, number>,
+  classMatchedRules: Map<PrimaryQuestionClass, string[]>,
+  cls: PrimaryQuestionClass,
+  delta: number,
+  ruleId: string,
+): void {
+  classScores.set(cls, (classScores.get(cls) ?? 0) + delta);
+  const rules = classMatchedRules.get(cls) ?? [];
+  rules.push(ruleId);
+  classMatchedRules.set(cls, rules);
+}
+
+function questionClassRank(cls: KnowledgeQuestionClass): number {
+  const tieRank = QUESTION_CLASS_TIE_BREAK.indexOf(cls);
+  if (tieRank !== -1) return tieRank;
+  return QUESTION_CLASS_TIE_BREAK.length + 1;
+}
+
+function breakClassTie(
+  a: PrimaryQuestionClass,
+  b: PrimaryQuestionClass,
+): KnowledgeQuestionClass {
+  return questionClassRank(a) <= questionClassRank(b) ? a : b;
+}
+
+function buildTopicCandidates(
+  rawTokens: string[],
+  normalizedTokens: string[],
+): Array<{ label: string; score: number; reasons: string[] }> {
+  const candidates = new Map<
+    string,
+    {
+      label: string;
+      score: number;
+      reasons: Set<string>;
+    }
+  >();
+
+  const pushCandidate = (label: string, score: number, reason: string) => {
+    const existing = candidates.get(label);
+    if (!existing) {
+      candidates.set(label, {
+        label,
+        score,
+        reasons: new Set([reason]),
+      });
+      return;
+    }
+    existing.score += score;
+    existing.reasons.add(reason);
+  };
+
+  for (const token of rawTokens) {
+    if (isPathLikeToken(token)) {
+      pushCandidate(`path:${token}`, 14, "path-anchor");
+    }
+    if (isSymbolLikeToken(token)) {
+      pushCandidate(`symbol:${token}`, 12, "symbol-anchor");
+    }
+    if (isRouteLikeToken(token)) {
+      pushCandidate(`route:${token}`, 10, "route-anchor");
+    }
+  }
+
+  for (const [topic, keywords] of Object.entries(DOMAIN_TOPICS)) {
+    let hits = 0;
+    for (const token of normalizedTokens) {
+      if (keywords.some((keyword) => token.includes(normalizeText(keyword)))) {
+        hits += 1;
+        pushCandidate(topic, 10, `domain-token:${token}`);
+      }
+    }
+    if (hits > 0) {
+      pushCandidate(topic, hits * 2, "domain-topic");
+    }
+  }
+
+  for (const token of normalizedTokens.slice(0, 3)) {
+    pushCandidate(token, 6, "query-token");
+  }
+
+  return [...candidates.values()]
+    .map((candidate) => ({
+      label: candidate.label,
+      score: candidate.score,
+      reasons: [...candidate.reasons].sort((a, b) => a.localeCompare(b)),
+    }))
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+    .slice(0, 5);
 }
 
 function scoreIntentBoost(
@@ -1729,6 +3171,33 @@ function evaluateStrictIssues(
   minConfidence: "low" | "medium" | "high",
 ): StrictIssueRecord[] {
   const issues: StrictIssueRecord[] = [];
+  if (evaluation.questionClass === "unknown_or_ambiguous") {
+    issues.push({
+      question: evaluation.question,
+      questionDigest: evaluation.questionDigest,
+      category: "question_class_ambiguous",
+      detail: `question class ${evaluation.questionClass} with class confidence ${evaluation.questionClassConfidence}`,
+    });
+  }
+  if (evaluation.evidencePackStatus === "partial") {
+    issues.push({
+      question: evaluation.question,
+      questionDigest: evaluation.questionDigest,
+      category: "evidence_pack_incomplete",
+      detail:
+        evaluation.missingEvidenceRequirements.length === 0
+          ? "evidence pack marked partial"
+          : `missing requirements: ${evaluation.missingEvidenceRequirements.join(", ")}`,
+    });
+  }
+  if (evaluation.failOpenTriggered) {
+    issues.push({
+      question: evaluation.question,
+      questionDigest: evaluation.questionDigest,
+      category: "fail_open_required",
+      detail: `fail-open triggered: ${evaluation.failOpenReasons.join(", ")}`,
+    });
+  }
   const minRank = confidenceRank(minConfidence);
   if (confidenceRank(evaluation.confidence.level) < minRank) {
     issues.push({
@@ -1777,6 +3246,16 @@ function confidenceRank(level: "low" | "medium" | "high"): number {
   if (level === "high") return 3;
   if (level === "medium") return 2;
   return 1;
+}
+
+function summarizeCounts(values: string[]): Array<{ key: string; count: number }> {
+  const map = new Map<string, number>();
+  for (const value of values) {
+    map.set(value, (map.get(value) ?? 0) + 1);
+  }
+  return [...map.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => a.key.localeCompare(b.key) || a.count - b.count);
 }
 
 function collectArtifactWarnings(

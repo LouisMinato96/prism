@@ -15,6 +15,7 @@ import {
   runKnowledgeBuild,
 } from "../src/stages/knowledge/build.ts";
 import {
+  classifyQuestionClass,
   classifyIntent,
   runKnowledgeAnswer,
 } from "../src/stages/knowledge/answer.ts";
@@ -521,6 +522,22 @@ test("knowledge answer classifies deterministic intents and precedence", () => {
   expect(classifyIntent("failed data flow")).toBe("failure-debug");
 });
 
+test("knowledge answer classifies deterministic question classes for v2.1", () => {
+  expect(classifyQuestionClass("How does the auth system work?")).toBe(
+    "architecture_storyline",
+  );
+  expect(classifyQuestionClass("Where is useAuth defined?")).toBe(
+    "reference_lookup",
+  );
+  expect(classifyQuestionClass("What calls deleteOldToken?")).toBe("dependency_flow");
+  expect(classifyQuestionClass("Where does login flow start?")).toBe(
+    "entrypoint_trace",
+  );
+  expect(classifyQuestionClass("What files make up auth?")).toBe("building_blocks");
+  expect(classifyQuestionClass("How should I add MFA?")).toBe("change_guidance");
+  expect(classifyQuestionClass("auth?")).toBe("unknown_or_ambiguous");
+});
+
 test("knowledge answer auth-flow intent ranking prefers auth services over workers", async () => {
   const baseDir = await createKnowledgeAnswerRankingFixtureProject();
   try {
@@ -541,6 +558,10 @@ test("knowledge answer auth-flow intent ranking prefers auth services over worke
     expect(serviceIndex).toBeGreaterThan(-1);
     expect(workerIndex).toBeGreaterThan(-1);
     expect(serviceIndex).toBeLessThan(workerIndex);
+    expect(content).toContain("## Executive Answer");
+    expect(content).toContain("## How To Read This Answer");
+    expect(content).toContain("## Proof References");
+    expect(content).toContain("## Raw Evidence Appendix");
     expect(content).toContain("## Auth Flow");
     expect(content).toContain("## Guards & Permissions");
     expect(content).toContain("## Failure Paths");
@@ -625,10 +646,16 @@ test("knowledge answer writes deterministic evidence file for a single question"
 
     expect(result.answers).toHaveLength(1);
     const answerPath = result.answers[0]!.outputPath;
+    const classificationPath = result.answers[0]!.classificationOutputPath;
+    const evidencePackPath = result.answers[0]!.evidencePackOutputPath;
     expect(existsSync(answerPath)).toBe(true);
+    expect(existsSync(classificationPath)).toBe(true);
+    expect(existsSync(evidencePackPath)).toBe(true);
     const content = await readFile(answerPath, "utf8");
     expect(content).toContain("# Prism Knowledge Answer");
     expect(content).toContain("How app page works");
+    expect(content).toContain("- question class:");
+    expect(content).toContain("- class confidence:");
     expect(content).toContain("- intent:");
     expect(content).toContain("- code root:");
     expect(content).toContain("- confidence:");
@@ -637,6 +664,11 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("diagram_signal:");
     expect(content).toContain("final_excerpt:");
     expect(content).toContain("service_flow_excerpt:");
+    expect(content).toContain("## Executive Answer");
+    expect(content).toContain("## How To Read This Answer");
+    expect(content).toContain("## Gaps / Uncertainty");
+    expect(content).toContain("## Proof References");
+    expect(content).toContain("## Raw Evidence Appendix");
     expect(content).toContain("No missing artifacts detected for ranked entries.");
     expect(content).toContain("Auth flow starts at login");
     expect(content).toContain("## Auth Flow");
@@ -646,6 +678,296 @@ test("knowledge answer writes deterministic evidence file for a single question"
     expect(content).toContain("| rank | run | entry | status | path | start_here | detail |");
     expect(content).toContain("Evidence Entries");
     expect(content).toContain("Evidence Insights");
+
+    const classification = JSON.parse(
+      await readFile(classificationPath, "utf8"),
+    ) as {
+      schemaVersion: number;
+      class: string;
+      confidence: string;
+      classScores: Array<{ class: string; score: number }>;
+      topicCandidates: Array<{ label: string; score: number; reasons: string[] }>;
+    };
+    expect(classification.schemaVersion).toBe(1);
+    expect(classification.class.length).toBeGreaterThan(0);
+    expect(classification.confidence.length).toBeGreaterThan(0);
+    expect(classification.classScores.length).toBeGreaterThan(0);
+    expect(classification.topicCandidates.length).toBeGreaterThan(0);
+
+    const evidencePack = JSON.parse(await readFile(evidencePackPath, "utf8")) as {
+      status: string;
+      requirements: string[];
+      satisfied: string[];
+      missing: string[];
+      sources: Array<{ kind: string; path: string }>;
+      codeRootFallback: { used: boolean; maxFiles: number; maxBytesPerFile: number };
+    };
+    expect(evidencePack.status.length).toBeGreaterThan(0);
+    expect(evidencePack.requirements.length).toBeGreaterThan(0);
+    expect(Array.isArray(evidencePack.satisfied)).toBe(true);
+    expect(Array.isArray(evidencePack.missing)).toBe(true);
+    expect(evidencePack.sources.length).toBeGreaterThan(0);
+    expect(evidencePack.codeRootFallback.maxFiles).toBe(25);
+    expect(evidencePack.codeRootFallback.maxBytesPerFile).toBe(250 * 1024);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer rerun keeps markdown/json/classification/evidence-pack byte-identical", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const first = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+    const firstAnswer = first.answers[0]!;
+    const firstMarkdown = await readFile(firstAnswer.outputPath, "utf8");
+    const firstJson = await readFile(firstAnswer.jsonOutputPath!, "utf8");
+    const firstClass = await readFile(firstAnswer.classificationOutputPath, "utf8");
+    const firstEvidence = await readFile(firstAnswer.evidencePackOutputPath, "utf8");
+
+    const second = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: false,
+    });
+    const secondAnswer = second.answers[0]!;
+    const secondMarkdown = await readFile(secondAnswer.outputPath, "utf8");
+    const secondJson = await readFile(secondAnswer.jsonOutputPath!, "utf8");
+    const secondClass = await readFile(secondAnswer.classificationOutputPath, "utf8");
+    const secondEvidence = await readFile(secondAnswer.evidencePackOutputPath, "utf8");
+
+    expect(secondMarkdown).toBe(firstMarkdown);
+    expect(secondJson).toBe(firstJson);
+    expect(secondClass).toBe(firstClass);
+    expect(secondEvidence).toBe(firstEvidence);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer evidence pack uses bounded code-root fallback when analyze references are missing", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "Where is foo/bar/ghost.zzz defined?",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+
+    const evidencePack = JSON.parse(
+      await readFile(result.answers[0]!.evidencePackOutputPath, "utf8"),
+    ) as {
+      status: string;
+      missing: string[];
+      codeRootFallback: {
+        used: boolean;
+        scannedFiles: number;
+        matchedFiles: number;
+        matchedPaths: string[];
+      };
+    };
+    expect(evidencePack.codeRootFallback.used).toBe(true);
+    expect(evidencePack.codeRootFallback.scannedFiles).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(evidencePack.codeRootFallback.matchedPaths)).toBe(true);
+    expect(evidencePack.status.length).toBeGreaterThan(0);
+    expect(Array.isArray(evidencePack.missing)).toBe(true);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer fallback scanning is bounded by configured max files", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const fallbackTokens: string[] = [];
+    await mkdir(join(baseDir, "src/fallback"), { recursive: true });
+    for (let index = 0; index < 40; index += 1) {
+      const fileRel = `src/fallback/f${String(index).padStart(2, "0")}.ts`;
+      await writeFile(
+        join(baseDir, fileRel),
+        `export const fallback${index} = ${index};\n`,
+      );
+      fallbackTokens.push(fileRel);
+    }
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: `What calls this flow? ${fallbackTokens.join(" ")}`,
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      force: true,
+    });
+
+    const evidencePack = JSON.parse(
+      await readFile(result.answers[0]!.evidencePackOutputPath, "utf8"),
+    ) as {
+      missing: string[];
+      codeRootFallback: {
+        used: boolean;
+        maxFiles: number;
+        scannedFiles: number;
+        matchedFiles: number;
+        matchedPaths: string[];
+      };
+    };
+    expect(evidencePack.codeRootFallback.used).toBe(true);
+    expect(evidencePack.codeRootFallback.maxFiles).toBe(25);
+    expect(evidencePack.codeRootFallback.scannedFiles).toBe(
+      evidencePack.codeRootFallback.maxFiles,
+    );
+    expect(evidencePack.codeRootFallback.matchedFiles).toBeLessThanOrEqual(
+      evidencePack.codeRootFallback.scannedFiles,
+    );
+    expect(evidencePack.codeRootFallback.matchedPaths.length).toBe(
+      evidencePack.codeRootFallback.matchedFiles,
+    );
+    expect(evidencePack.missing).toContain("dependency_edges");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer uses standardized truncation markers in human sections", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const artifactsIndexPath = join(baseDir, ".prism/knowledge/artifacts-index.json");
+    const artifactsIndex = JSON.parse(await readFile(artifactsIndexPath, "utf8")) as {
+      runs: Array<{
+        entries: Array<{
+          name: string;
+          path: string;
+          status: "success" | "failed";
+          workdir: string;
+          scope: string;
+          symbols: string;
+          repoIndex: string;
+          insights: string;
+          finalIndex: string;
+          finalReport: string;
+          symbolDirectoryPage: string;
+          moduleDirectoryPage: string;
+        }>;
+      }>;
+    };
+    const seed = artifactsIndex.runs[0]!.entries.find(
+      (entry) => entry.name === "app-page",
+    );
+    expect(seed).toBeDefined();
+    const expanded = [];
+    for (let index = 1; index <= 9; index += 1) {
+      const fileRel = `src/app/page-${index}.tsx`;
+      await writeFile(
+        join(baseDir, fileRel),
+        `export default function Page${index}() { return null; }\n`,
+      );
+      expanded.push({
+        ...seed!,
+        name: `app-page-${index}`,
+        path: fileRel,
+      });
+    }
+    artifactsIndex.runs[0]!.entries = expanded;
+    await writeFile(artifactsIndexPath, `${JSON.stringify(artifactsIndex, null, 2)}\n`);
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How does src/app/page-1.tsx work?",
+      outDir: ".prism/knowledge/answers",
+      top: 9,
+      force: true,
+    });
+
+    const content = await readFile(result.answers[0]!.outputPath, "utf8");
+    expect(content).toContain("- showing 8 of 9 ranked entries");
+    expect(content).toContain("- showing 8 of 9 ranked references");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer renders deterministic fail-open guidance for ambiguous prompts", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "auth?",
+      outDir: ".prism/knowledge/answers",
+      emitJson: true,
+      top: 5,
+      force: true,
+    });
+
+    const content = await readFile(result.answers[0]!.outputPath, "utf8");
+    expect(content).toContain("## Fail-Open Guidance");
+    expect(content).toContain("question_class_ambiguous");
+    expect(content).toContain("candidate topics");
+    expect(content).toContain("candidate entries");
+
+    const json = JSON.parse(await readFile(result.answers[0]!.jsonOutputPath!, "utf8")) as {
+      failOpen: {
+        triggered: boolean;
+        reasons: string[];
+      };
+    };
+    expect(json.failOpen.triggered).toBe(true);
+    expect(json.failOpen.reasons.length).toBeGreaterThan(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
@@ -770,6 +1092,36 @@ test("knowledge answer strict mode reports failures after writing outputs", asyn
   }
 });
 
+test("knowledge answer strict mode surfaces class and fail-open categories", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const result = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "auth?",
+      outDir: ".prism/knowledge/answers",
+      strict: true,
+      minConfidence: "high",
+      force: true,
+    });
+    expect(result.strict.failed).toBe(true);
+    const categories = result.strict.issues.map((issue) => issue.category);
+    expect(categories).toContain("question_class_ambiguous");
+    expect(categories).toContain("evidence_pack_incomplete");
+    expect(categories).toContain("fail_open_required");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("knowledge answer supports questions file and writes batch index", async () => {
   const baseDir = await createKnowledgeFixtureProject();
   try {
@@ -810,8 +1162,13 @@ test("knowledge answer supports questions file and writes batch index", async ()
     expect(batchIndex).toContain("- answer count: 2");
     expect(batchIndex).toContain("- strict mode: disabled");
     expect(batchIndex).toContain(
-      "| # | digest | confidence | strict | markdown | json | question |",
+      "| # | digest | class | confidence | evidence | fail-open | strict | markdown | json | classification | evidence-pack | question |",
     );
+    expect(batchIndex).toContain("## Class Summary");
+    expect(batchIndex).toContain("## Evidence-Pack Summary");
+    expect(batchIndex).toContain("## Needs Follow-Up");
+    expect(batchIndex).toContain(".classification.json");
+    expect(batchIndex).toContain(".evidence-pack.json");
     expect(batchIndex).toContain("How auth works");
     expect(batchIndex).toContain("Which entries failed");
   } finally {
@@ -855,9 +1212,85 @@ test("knowledge answer batch index reports strict issues per question", async ()
     expect(batchIndex).toContain("- strict mode: enabled (min=high)");
     expect(batchIndex).toContain("## Strict Summary");
     expect(batchIndex).toContain("| category | count |");
+    expect(batchIndex).toContain("## Class Summary");
+    expect(batchIndex).toContain("## Evidence-Pack Summary");
+    expect(batchIndex).toContain("## Needs Follow-Up");
     expect(batchIndex).toContain("## Strict Issues");
     expect(batchIndex).toContain("fail(");
     expect(batchIndex).toContain("code=");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer large strict batch keeps index stable and parse-friendly", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+
+    const questions = [
+      "How does the auth system work?",
+      "Where is useAuth defined?",
+      "What calls deleteOldToken?",
+      "Where does login flow start?",
+      "What files make up auth?",
+      "How should I add MFA?",
+      "auth?",
+      "How app page works",
+      "Which entries failed?",
+      "Where is src/app/page.tsx defined?",
+      "What are failure paths in auth?",
+    ];
+    await writeFile(
+      join(baseDir, ".tmp", "questions-large.json"),
+      JSON.stringify({ questions }, null, 2),
+    );
+
+    const first = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: ".tmp/questions-large.json",
+      outDir: ".prism/knowledge/answers-batch",
+      strict: true,
+      minConfidence: "high",
+      emitJson: true,
+      top: 8,
+      force: true,
+    });
+    expect(first.answers).toHaveLength(questions.length);
+    expect(first.indexPath).toBeDefined();
+    expect(first.indexPath && existsSync(first.indexPath)).toBe(true);
+    const firstIndex = await readFile(first.indexPath!, "utf8");
+    expect(firstIndex).toContain("- question count: 11");
+    expect(firstIndex).toContain("- answer count: 11");
+    expect(firstIndex).toContain("- strict mode: enabled (min=high)");
+    expect(firstIndex).toContain("## Strict Summary");
+    expect(firstIndex).toContain("## Strict Issues");
+    expect(firstIndex).toContain("## Class Summary");
+    expect(firstIndex).toContain("## Evidence-Pack Summary");
+    expect(firstIndex).toContain("## Needs Follow-Up");
+    expect(firstIndex).toContain(".classification.json");
+    expect(firstIndex).toContain(".evidence-pack.json");
+
+    const second = await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: ".tmp/questions-large.json",
+      outDir: ".prism/knowledge/answers-batch",
+      strict: true,
+      minConfidence: "high",
+      emitJson: true,
+      top: 8,
+      force: false,
+    });
+    const secondIndex = await readFile(second.indexPath!, "utf8");
+    expect(secondIndex).toBe(firstIndex);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

@@ -3,7 +3,8 @@
 This document defines the deterministic machine-readable contract for:
 
 1. per-question answer JSON sidecars (`--emit-json`)
-2. strict-mode diagnostics for CI
+2. per-question classification sidecars (always emitted)
+3. strict-mode diagnostics for CI
 
 ## Per-Question JSON Sidecar
 
@@ -22,6 +23,12 @@ Example path:
   "schemaVersion": 1,
   "question": "How does auth work?",
   "questionDigest": "47cbb495d70a",
+  "questionClass": "architecture_storyline",
+  "questionClassConfidence": "high",
+  "questionClassScore": 56,
+  "questionClassDelta": 14,
+  "questionClassRules": ["verb_how", "phrase_architecture", "domain_token:all"],
+  "topicCandidates": [],
   "intent": "auth-flow",
   "intentKeywords": ["auth"],
   "generatedAt": "2026-05-21T05:09:35.363Z",
@@ -38,6 +45,28 @@ Example path:
     "contradictionSignals": [],
     "relevantSignals": []
   },
+  "evidencePack": {
+    "status": "partial",
+    "requirements": [],
+    "satisfied": [],
+    "missing": [],
+    "sources": [],
+    "codeRootFallback": {
+      "used": true,
+      "maxFiles": 25,
+      "maxBytesPerFile": 256000,
+      "scannedFiles": 3,
+      "matchedFiles": 1,
+      "matchedPaths": []
+    }
+  },
+  "failOpen": {
+    "triggered": false,
+    "reasons": [],
+    "candidateTopics": [],
+    "candidateEntries": [],
+    "missingRequirements": []
+  },
   "limits": []
 }
 ```
@@ -52,14 +81,78 @@ Example path:
   - `data-flow`
   - `failure-debug`
   - `general`
+- `questionClass`: one of:
+  - `architecture_storyline`
+  - `entrypoint_trace`
+  - `dependency_flow`
+  - `building_blocks`
+  - `reference_lookup`
+  - `change_guidance`
+  - `unknown_or_ambiguous`
+- `questionClassConfidence`: `high | medium | low | none`
 - `confidence.level`: `low | medium | high`
 - `entries[]`: ranked evidence entries
 - `insights[]`: ranked and deduped insight evidence
 - `warnings[]`: missing-artifact warnings for ranked entries
+- `evidencePack`: deterministic analyze-first evidence requirements/satisfaction with bounded code-root fallback stats
+- `failOpen`: deterministic fail-open decision payload for ambiguous/low-evidence questions
 - `integritySignals`:
   - `staleRunSignals`: stale/duplicate/orphan run signals from knowledge build
   - `contradictionSignals`: deterministic artifact-conflict signals from knowledge build
   - `relevantSignals`: query-relevant subset used in answer rendering
+
+## Per-Question Classification Sidecar
+
+Each answer markdown file also has a deterministic classification sidecar:
+
+```text
+.prism/knowledge/answers/how-does-auth-work.classification.json
+```
+
+Shape (`schemaVersion: 1`):
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-21T05:09:35.363Z",
+  "question": "How does auth work?",
+  "questionDigest": "47cbb495d70a",
+  "normalizedQuestion": "how does auth work",
+  "class": "architecture_storyline",
+  "confidence": "high",
+  "score": 56,
+  "delta": 14,
+  "matchedRules": ["verb_how", "phrase_architecture", "domain_token:all"],
+  "classScores": [],
+  "topicCandidates": []
+}
+```
+
+Each answer markdown file also has an evidence-pack sidecar:
+
+```text
+.prism/knowledge/answers/how-does-auth-work.evidence-pack.json
+```
+
+Shape:
+
+```json
+{
+  "status": "complete",
+  "requirements": ["entrypoints", "references"],
+  "satisfied": ["entrypoints", "references"],
+  "missing": [],
+  "sources": [],
+  "codeRootFallback": {
+    "used": false,
+    "maxFiles": 25,
+    "maxBytesPerFile": 256000,
+    "scannedFiles": 0,
+    "matchedFiles": 0,
+    "matchedPaths": []
+  }
+}
+```
 
 ### `entries[]` Shape
 
@@ -105,6 +198,9 @@ When strict fails, CLI emits:
 ### Strict Categories
 
 - `confidence_below_min`
+- `question_class_ambiguous`
+- `evidence_pack_incomplete`
+- `fail_open_required`
 - `missing_code_file`
 - `missing_graph`
 - `missing_repo_index`

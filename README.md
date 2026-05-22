@@ -434,11 +434,23 @@ prism knowledge answer \
   --out-dir .prism/knowledge/answers
 ```
 
+Batch mode writes deterministic `answers/index.md` with:
+
+- per-question class, confidence, evidence-pack status, fail-open status
+- links to markdown/json/classification/evidence-pack artifacts
+- grouped summaries: class, evidence-pack status
+- strict summaries/issues (when `--strict` is enabled)
+- deterministic "needs follow-up" rows for ambiguous/fail-open/partial-evidence questions
+
 Answers include:
 
 - grounded summary text
-- deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
-- deterministic section blocks (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`)
+- deterministic question class classification (`architecture_storyline`, `entrypoint_trace`, `dependency_flow`, `building_blocks`, `reference_lookup`, `change_guidance`, `unknown_or_ambiguous`)
+- deterministic ranking intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
+- deterministic human-first sections (`Executive Answer`, `How To Read This Answer`, class-aware narrative blocks, `Proof References`)
+- deterministic raw appendix sections (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`, `Evidence Entries`, `Evidence Insights`)
+- deterministic evidence-pack orchestration by question class (`requirements`, `satisfied`, `missing`)
+- deterministic fail-open guidance when class/evidence confidence is weak
 - top matched entries with `start_here` and `detail` links
 - code-file paths resolved against the selected code root (`exists`/`missing`)
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
@@ -448,6 +460,8 @@ Answers include:
 - staleness and contradiction signals loaded from `artifacts-index.json`
 - deterministic limits and evidence notes
 - optional machine-readable JSON sidecars with `--emit-json`
+- always-on machine-readable classification sidecars (`*.classification.json`)
+- always-on machine-readable evidence-pack sidecars (`*.evidence-pack.json`)
 
 Strict mode CI behavior:
 
@@ -456,7 +470,11 @@ Strict mode CI behavior:
   - `STRICT_SUMMARY ...`
   - `STRICT_CATEGORY ...`
   - `STRICT_FAILURE ...`
-- batch answers write `index.md` with deterministic strict summary and per-question strict issue rows
+- strict mode now also enforces class/evidence gates:
+  - ambiguous class detection
+  - incomplete evidence-pack requirements
+  - fail-open-triggered answers
+- batch answers write `index.md` with deterministic class/evidence/follow-up summaries plus strict issue rows
 
 If your analyze/docs/knowledge roots are in a different repository, run Prism from this repo and pass absolute roots. Example:
 

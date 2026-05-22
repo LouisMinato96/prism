@@ -159,11 +159,23 @@ prism knowledge answer \
   --out-dir .prism/knowledge/answers
 ```
 
+Batch mode writes deterministic `answers/index.md` with:
+
+1. per-question class, confidence, evidence-pack status, and fail-open status
+2. links to markdown/json/classification/evidence-pack artifacts
+3. grouped summaries for class and evidence-pack status
+4. strict summaries/issues when strict mode is enabled
+5. deterministic "needs follow-up" rows for ambiguous/fail-open/partial-evidence answers
+
 Answer files are Markdown and include:
 
 - grounded summary text
-- deterministic intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
-- deterministic section renderer (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`)
+- deterministic question class classification (`architecture_storyline`, `entrypoint_trace`, `dependency_flow`, `building_blocks`, `reference_lookup`, `change_guidance`, `unknown_or_ambiguous`)
+- deterministic ranking intent classification (`auth-flow`, `permissions`, `data-flow`, `failure-debug`, `general`)
+- deterministic human-first sections (`Executive Answer`, `How To Read This Answer`, class-aware narrative blocks, `Proof References`)
+- deterministic raw appendix sections (`Auth Flow`, `Guards & Permissions`, `Failure Paths`, `Evidence Map`, `Evidence Entries`, `Evidence Insights`)
+- deterministic evidence-pack orchestration (question-class requirements, satisfied evidence, explicit missing evidence)
+- deterministic fail-open guidance for ambiguous/low-evidence questions
 - evidence entries with artifact links (`final/index.md`, `final/analysis.md`, `final/pages/08-service-flow.md`)
 - code-file paths resolved against code root with `exists`/`missing` status
 - graph and diagram evidence signals (`flow_signal`, `diagram_signal`)
@@ -173,6 +185,8 @@ Answer files are Markdown and include:
 - stale/contradiction evidence signals from `artifacts-index.json`
 - deterministic limits and gaps notes
 - optional JSON sidecar output when `--emit-json` is enabled
+- always-on `*.classification.json` sidecar per answer
+- always-on `*.evidence-pack.json` sidecar per answer
 
 Answer JSON contract:
 
@@ -189,6 +203,9 @@ Strict mode is deterministic and CI-friendly:
 Strict categories include:
 
 - `confidence_below_min`
+- `question_class_ambiguous`
+- `evidence_pack_incomplete`
+- `fail_open_required`
 - `missing_code_file`
 - `missing_graph`
 - `missing_repo_index`
@@ -201,7 +218,7 @@ CLI stderr markers (parse-friendly):
 - `STRICT_CATEGORY category=<name> count=<n>`
 - `STRICT_FAILURE question_digest=<digest> category=<name> detail=<text>`
 
-Batch mode (`--questions-file`) also writes deterministic strict summary and strict issue rows in `answers/index.md`.
+Batch mode (`--questions-file`) writes deterministic class/evidence/follow-up summaries and strict issue rows in `answers/index.md`.
 
 ## Troubleshooting
 

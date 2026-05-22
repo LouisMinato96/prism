@@ -4,6 +4,12 @@ This file is the execution checklist for making `prism knowledge` truly producti
 
 Implementation prep for V1: `docs/knowledge-v1-prep.md`.
 Implementation prep for V2: `docs/knowledge-v2-prep.md`.
+Implementation prep for V2.1: `docs/knowledge-v2.1-prep.md`.
+Implementation prep for V2.2: `docs/knowledge-v2.2-prep.md`.
+Implementation prep for V2.3: `docs/knowledge-v2.3-prep.md`.
+Implementation prep for V2.4: `docs/knowledge-v2.4-prep.md`.
+Implementation prep for V2.5: `docs/knowledge-v2.5-prep.md`.
+Implementation prep for V2.6: `docs/knowledge-v2.6-prep.md`.
 Implementation prep for V3: `docs/knowledge-v3-prep.md`.
 
 ## Outcome Target

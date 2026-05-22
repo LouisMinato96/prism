@@ -201,6 +201,63 @@ export const KnowledgeQuestionsFileSchema = z.union([
 ]);
 export type KnowledgeQuestionsFile = z.infer<typeof KnowledgeQuestionsFileSchema>;
 
+export const KnowledgeQuestionClassSchema = z.enum([
+  "architecture_storyline",
+  "entrypoint_trace",
+  "dependency_flow",
+  "building_blocks",
+  "reference_lookup",
+  "change_guidance",
+  "unknown_or_ambiguous",
+]);
+export type KnowledgeQuestionClass = z.infer<typeof KnowledgeQuestionClassSchema>;
+
+export const KnowledgeQuestionClassConfidenceSchema = z.enum([
+  "high",
+  "medium",
+  "low",
+  "none",
+]);
+export type KnowledgeQuestionClassConfidence = z.infer<
+  typeof KnowledgeQuestionClassConfidenceSchema
+>;
+
+export const KnowledgeQuestionClassScoreSchema = z.object({
+  class: KnowledgeQuestionClassSchema,
+  score: z.number().int(),
+  matchedRules: z.array(z.string()),
+});
+export type KnowledgeQuestionClassScore = z.infer<
+  typeof KnowledgeQuestionClassScoreSchema
+>;
+
+export const KnowledgeQuestionTopicCandidateSchema = z.object({
+  label: z.string(),
+  score: z.number().int().nonnegative(),
+  reasons: z.array(z.string()),
+});
+export type KnowledgeQuestionTopicCandidate = z.infer<
+  typeof KnowledgeQuestionTopicCandidateSchema
+>;
+
+export const KnowledgeQuestionClassificationSchema = z.object({
+  schemaVersion: z.literal(KnowledgeSchemaVersion),
+  generatedAt: z.string(),
+  question: z.string(),
+  questionDigest: z.string(),
+  normalizedQuestion: z.string(),
+  class: KnowledgeQuestionClassSchema,
+  confidence: KnowledgeQuestionClassConfidenceSchema,
+  score: z.number().int(),
+  delta: z.number().int().nonnegative(),
+  matchedRules: z.array(z.string()),
+  classScores: z.array(KnowledgeQuestionClassScoreSchema),
+  topicCandidates: z.array(KnowledgeQuestionTopicCandidateSchema),
+});
+export type KnowledgeQuestionClassification = z.infer<
+  typeof KnowledgeQuestionClassificationSchema
+>;
+
 export const KnowledgeUpdateCommitSchema = z.object({
   sha: z.string(),
   shortSha: z.string(),
