@@ -222,6 +222,86 @@ const TOPICS: TeachingTopic[] = [
       },
     ],
   },
+  {
+    file: "18-console-log.md",
+    title: "18 Console & Debugger",
+    summary: "console.log/warn/error/debug calls and debugger statements",
+    lensIds: ["console-log"],
+    intro:
+      "Console calls leak internal state to browser dev tools. Debugger statements halt execution entirely. Both are development-time aids that should be removed before shipping.",
+    guidance:
+      "Replace console calls with a structured logger gated by log-level configuration. Remove all debugger statements. If a console call is intentional (e.g. server-side startup log), annotate with a lint-disable comment.",
+    references: [
+      {
+        label: "MDN Console API",
+        url: "https://developer.mozilla.org/en-US/docs/Web/API/console",
+      },
+      {
+        label: "eslint no-console",
+        url: "https://eslint.org/docs/latest/rules/no-console",
+      },
+    ],
+  },
+  {
+    file: "19-unused-imports.md",
+    title: "19 Unused Imports",
+    summary: "Import identifiers not referenced in file body",
+    lensIds: ["unused-imports"],
+    intro:
+      "Unused imports add noise, slow IDE indexing, and can pull in side-effect modules unintentionally. Detection is AST-only and may produce false positives on type-only imports used solely in erased positions.",
+    guidance:
+      "Remove unused imports. For type-only imports flagged as false positives, add an explicit `import type` qualifier — this documents intent and avoids the false positive. Auto-organize-imports in your editor can prevent accumulation.",
+    references: [
+      {
+        label: "typescript-eslint no-unused-vars",
+        url: "https://typescript-eslint.io/rules/no-unused-vars/",
+      },
+      {
+        label: "TypeScript: import type",
+        url: "https://www.typescriptlang.org/docs/handbook/2/modules.html#import-type",
+      },
+    ],
+  },
+  {
+    file: "20-promise-error-handling.md",
+    title: "20 Promise Error Handling",
+    summary: ".then() without .catch() and await without try/catch",
+    lensIds: ["promise-error-handling"],
+    intro:
+      "Promise chains without error handlers cause unhandled rejections — crashes in Node, silent failures in browsers. Await at statement level without try/catch lets rejections propagate unhandled unless the caller catches.",
+    guidance:
+      "Add .catch() at the end of every .then() chain. Wrap statement-level await in try/catch when rejection is possible. For intentional fire-and-forget, add .catch(() => {}) explicitly to document intent. Prefer async/await over .then() chains for readability.",
+    references: [
+      {
+        label: "MDN: Promise.prototype.catch()",
+        url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/catch",
+      },
+      {
+        label: "Node.js unhandledRejection event",
+        url: "https://nodejs.org/api/process.html#event-unhandledrejection",
+      },
+    ],
+  },
+  {
+    file: "21-magic-numbers.md",
+    title: "21 Magic Numbers",
+    summary: "Numeric literals without named constants",
+    lensIds: ["magic-number"],
+    intro:
+      "Magic numbers are numeric literals used directly in code without a named constant. They obscure intent and make changes error-prone — the same value might mean different things in different contexts.",
+    guidance:
+      "Extract numeric literals to named constants (const MAX_RETRIES = 3). Values 0, 1, -1 are excluded as universally understood. Constants in const declarations, enum members, and array indices are also excluded. Functions with 3+ magic numbers signal a refactoring opportunity.",
+    references: [
+      {
+        label: "SonarSource: Magic number (RSPEC-109)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-109/",
+      },
+      {
+        label: "Refactoring.guru: Replace Magic Number with Symbolic Constant",
+        url: "https://refactoring.guru/replace-magic-number-with-symbolic-constant",
+      },
+    ],
+  },
 ];
 
 export function renderTeachingPages(input: TeachingInput): TeachingPage[] {
@@ -472,5 +552,42 @@ const GLOSSARY: GlossaryEntry[] = [
     metric: "none (categorical)",
     docsLabel: "Prism analyze docs",
     docsUrl: "https://github.com/anthropics/prism",
+  },
+  {
+    id: "console-log",
+    description:
+      "Detects console.log/warn/error/debug calls and debugger statements. Console calls leak internal state; debugger statements halt execution in dev tools.",
+    severityLadder: "info (log/debug), low (warn/error), medium (debugger)",
+    metric: "console-count per file (threshold 3)",
+    docsLabel: "MDN Console API",
+    docsUrl: "https://developer.mozilla.org/en-US/docs/Web/API/console",
+  },
+  {
+    id: "unused-imports",
+    description:
+      "Detects import identifiers not referenced elsewhere in the file body. AST-only analysis; may false-positive on type-only imports used in erased positions.",
+    severityLadder: "low",
+    metric: "none (categorical)",
+    docsLabel: "typescript-eslint no-unused-vars",
+    docsUrl: "https://typescript-eslint.io/rules/no-unused-vars/",
+  },
+  {
+    id: "promise-error-handling",
+    description:
+      "Detects .then() chains without a .catch() handler and await expressions at statement level not inside a try/catch block. Intentional fire-and-forget patterns and await in return/assignment positions are excluded.",
+    severityLadder: "medium (.then without .catch), low (try-less await)",
+    metric: "none (categorical)",
+    docsLabel: "MDN: Promise.prototype.catch()",
+    docsUrl:
+      "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/catch",
+  },
+  {
+    id: "magic-number",
+    description:
+      "Detects numeric literals used outside named constant contexts. Excludes 0/1/-1, const declarations, enum members, array indices, readonly properties, and loop bounds.",
+    severityLadder: "info (isolated), low (3+ per function)",
+    metric: "magic-number-count per function (threshold 3)",
+    docsLabel: "SonarSource magic number (RSPEC-109)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-109/",
   },
 ];

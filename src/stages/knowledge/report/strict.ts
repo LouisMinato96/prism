@@ -5,7 +5,11 @@ export type StrictCategory =
   | "question_class_ambiguous"
   | "evidence_pack_incomplete"
   | "fail_open_required"
-  | "missing_code_file";
+  | "missing_code_file"
+  | "missing_graph"
+  | "missing_repo_index"
+  | "missing_final_index"
+  | "missing_service_flow_page";
 
 export interface StrictIssue {
   questionDigest: string;
@@ -84,6 +88,23 @@ export function evaluateQuestionStrict(
         question: question.question,
         category: "missing_code_file",
         detail: `${missingPaths.length} entry code file(s) missing: ${missingPaths.join(", ")}`,
+      });
+    }
+  }
+
+  const artifactGapCategories: StrictCategory[] = [
+    "missing_graph",
+    "missing_repo_index",
+    "missing_final_index",
+    "missing_service_flow_page",
+  ];
+  for (const gap of question.artifactGaps) {
+    if (artifactGapCategories.includes(gap.category as StrictCategory)) {
+      issues.push({
+        questionDigest: question.digest,
+        question: question.question,
+        category: gap.category as StrictCategory,
+        detail: gap.detail,
       });
     }
   }

@@ -2491,7 +2491,7 @@ test("knowledge answer-report emits manifest and placeholder index", async () =>
     expect(result.manifest.counts.inputs).toBe(6);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
     expect(result.manifest.sources).toEqual([...result.manifest.sources].sort());
-    expect(result.manifest.pages.length).toBe(16);
+    expect(result.manifest.pages.length).toBe(23);
 
     const manifestOnDisk = JSON.parse(await readFile(result.manifestPath, "utf8"));
     expect(manifestOnDisk.digest).toBe(result.manifest.digest);
@@ -2627,7 +2627,7 @@ test("knowledge answer-report emits pages, per-question files, data, and validat
     expect(result.manifest.counts.answerJsonSidecars).toBe(2);
     expect(result.manifest.counts.markdownSidecars).toBe(2);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
-    expect(result.manifest.pages.length).toBe(16);
+    expect(result.manifest.pages.length).toBe(23);
 
     for (const page of [
       "00-overview.md",
@@ -2637,6 +2637,9 @@ test("knowledge answer-report emits pages, per-question files, data, and validat
       "04-strict-issues.md",
       "05-integrity-signals.md",
       "06-diagram-index.md",
+      "07-question-overlap.md",
+      "08-coverage-gaps.md",
+      "09-insight-correlation.md",
     ]) {
       expect(existsSync(join(reportOut, "pages", page))).toBe(true);
     }
@@ -2857,7 +2860,7 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       force: true,
     });
 
-    expect(result.manifest.pages.length).toBe(16);
+    expect(result.manifest.pages.length).toBe(23);
 
     for (const page of [
       "10-react-standards.md",
@@ -2868,6 +2871,10 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       "15-complexity-hotspots.md",
       "16-coupling-cohesion.md",
       "17-todo-debt.md",
+      "18-console-log.md",
+      "19-unused-imports.md",
+      "20-promise-error-handling.md",
+      "21-magic-numbers.md",
       "99-glossary.md",
     ]) {
       expect(existsSync(join(reportOut, "pages", page))).toBe(true);
@@ -2898,6 +2905,10 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       "react",
       "coupling",
       "diagrams",
+      "console-log",
+      "unused-imports",
+      "promise-error-handling",
+      "magic-number",
     ]) {
       expect(glossary).toContain(`## ${lensId}`);
     }
@@ -3107,13 +3118,13 @@ test("knowledge answer-report e2e smoke: build → answer → report → verify"
     expect(result.manifest.schemaVersion).toBe(1);
     expect(result.manifest.counts.questions).toBe(2);
     expect(result.manifest.strict).toBe(true);
-    expect(result.manifest.pages.length).toBe(16);
+    expect(result.manifest.pages.length).toBe(23);
 
     const index = await readFile(result.indexPath, "utf8");
     expect(index).toContain("strict mode: enabled");
     expect(index).toContain("Deterministic aggregator (v2.12)");
 
-    for (const dataFile of ["questions.json", "entries-rollup.json", "strict-rollup.json"]) {
+    for (const dataFile of ["questions.json", "entries-rollup.json", "strict-rollup.json", "lens-findings.json", "cross-question.json"]) {
       expect(existsSync(join(reportOut, "data", dataFile))).toBe(true);
     }
   } finally {
@@ -3157,6 +3168,288 @@ test("knowledge answer-report strict produces parse-friendly markers", async () 
     expect(result.manifest.strictSummary).not.toBeNull();
     expect(result.manifest.strictSummary!.issueCount).toBeGreaterThan(0);
     expect(result.manifest.strictSummary!.categories.length).toBeGreaterThan(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report strict flags artifact gap categories from sidecar (v2.13)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const answersDir = join(baseDir, ".prism/knowledge/answers");
+    const jsonFiles = (await import("node:fs")).readdirSync(answersDir).filter(
+      (f: string) => f.endsWith(".json") && !f.endsWith(".classification.json") && !f.endsWith(".evidence-pack.json"),
+    );
+    expect(jsonFiles.length).toBeGreaterThan(0);
+    const jsonPath = join(answersDir, jsonFiles[0]!);
+    const json = JSON.parse(await readFile(jsonPath, "utf8"));
+    json.artifactGaps = [
+      { category: "missing_graph", detail: "run1/entry1: missing graph" },
+      { category: "missing_repo_index", detail: "run1/entry1: missing repo-index" },
+      { category: "missing_final_index", detail: "run1/entry2: missing final index" },
+      { category: "missing_service_flow_page", detail: "run1/entry2: missing service-flow page" },
+    ];
+    await writeFile(jsonPath, JSON.stringify(json, null, 2));
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/strict-gaps");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "low",
+      force: true,
+    });
+
+    expect(result.strictFailed).toBe(true);
+    const gapCategories = result.strictIssues
+      .map((i) => i.category)
+      .filter((c) => ["missing_graph", "missing_repo_index", "missing_final_index", "missing_service_flow_page"].includes(c));
+    expect(gapCategories).toContain("missing_graph");
+    expect(gapCategories).toContain("missing_repo_index");
+    expect(gapCategories).toContain("missing_final_index");
+    expect(gapCategories).toContain("missing_service_flow_page");
+
+    const strictPage = await readFile(join(reportOut, "pages/04-strict-issues.md"), "utf8");
+    expect(strictPage).toContain("missing_graph");
+    expect(strictPage).toContain("missing_service_flow_page");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report strict rollup supports 9 category types (v2.13)", async () => {
+  const { evaluateQuestionStrict, buildStrictSummary } = await import("../src/stages/knowledge/report/strict.ts");
+  const question = {
+    digest: "abc123def456",
+    question: "test question",
+    class: "unknown_or_ambiguous" as const,
+    classConfidence: "low" as const,
+    evidencePackStatus: "partial" as const,
+    evidencePackRequirements: ["req1"],
+    evidencePackSatisfied: [],
+    evidencePackMissing: ["req1"],
+    answerJsonPresent: true,
+    confidence: { level: "low" as const, score: 20 },
+    failOpenTriggered: true,
+    failOpenReasons: ["no results"],
+    intent: "test",
+    entries: [
+      { run: "r1", name: "e1", path: "src/ghost.tsx", score: 10, status: "success" as const, codeExists: false },
+    ],
+    insights: [],
+    artifactGaps: [
+      { category: "missing_graph", detail: "r1/e1: missing graph" },
+      { category: "missing_repo_index", detail: "r1/e1: missing repo-index" },
+      { category: "missing_final_index", detail: "r1/e1: missing final index" },
+      { category: "missing_service_flow_page", detail: "r1/e1: missing service-flow page" },
+    ],
+    classificationPath: "/tmp/test.classification.json",
+    evidencePackPath: "/tmp/test.evidence-pack.json",
+  };
+
+  const issues = evaluateQuestionStrict(question, "high");
+  const categories = [...new Set(issues.map((i) => i.category))].sort();
+  expect(categories).toEqual([
+    "confidence_below_min",
+    "evidence_pack_incomplete",
+    "fail_open_required",
+    "missing_code_file",
+    "missing_final_index",
+    "missing_graph",
+    "missing_repo_index",
+    "missing_service_flow_page",
+    "question_class_ambiguous",
+  ]);
+
+  const issuesByDigest = new Map<string, typeof issues>();
+  issuesByDigest.set(question.digest, issues);
+  const summary = buildStrictSummary([question], issuesByDigest);
+  expect(summary.categories.length).toBe(9);
+  expect(summary.failedQuestionCount).toBe(1);
+});
+
+test("knowledge answer-report emits lens-findings.json (v2.13)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/lens-findings");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const lensFindingsPath = join(reportOut, "data/lens-findings.json");
+    expect(existsSync(lensFindingsPath)).toBe(true);
+    const lensFindings = JSON.parse(await readFile(lensFindingsPath, "utf8"));
+    expect(lensFindings.schemaVersion).toBe(1);
+    expect(typeof lensFindings.lensCount).toBe("number");
+    expect(Array.isArray(lensFindings.lenses)).toBe(true);
+    if (lensFindings.lensCount > 0) {
+      const firstLens = lensFindings.lenses[0];
+      expect(typeof firstLens.lens).toBe("string");
+      expect(typeof firstLens.findingCount).toBe("number");
+      expect(Array.isArray(firstLens.findings)).toBe(true);
+    }
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report backward compat: old sidecars without artifactGaps (v2.13)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const answersDir = join(baseDir, ".prism/knowledge/answers");
+    const jsonFiles = (await import("node:fs")).readdirSync(answersDir).filter(
+      (f: string) => f.endsWith(".json") && !f.endsWith(".classification.json") && !f.endsWith(".evidence-pack.json"),
+    );
+    expect(jsonFiles.length).toBeGreaterThan(0);
+    const jsonPath = join(answersDir, jsonFiles[0]!);
+    const json = JSON.parse(await readFile(jsonPath, "utf8"));
+    delete json.artifactGaps;
+    await writeFile(jsonPath, JSON.stringify(json, null, 2));
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/compat");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: true,
+      minConfidence: "low",
+      force: true,
+    });
+
+    const gapIssues = result.strictIssues.filter((i) =>
+      ["missing_graph", "missing_repo_index", "missing_final_index", "missing_service_flow_page"].includes(i.category),
+    );
+    expect(gapIssues.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report cross-question pages render with 2+ questions (v2.15)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await writeFile(
+      join(baseDir, "questions.json"),
+      JSON.stringify(["How app page works", "What auth flow is used"]),
+    );
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      questionsFile: "questions.json",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/cross-q");
+    const result = await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    expect(result.manifest.counts.questions).toBe(2);
+    expect(result.manifest.pages.length).toBe(23);
+
+    for (const page of [
+      "07-question-overlap.md",
+      "08-coverage-gaps.md",
+      "09-insight-correlation.md",
+    ]) {
+      expect(existsSync(join(reportOut, "pages", page))).toBe(true);
+    }
+
+    const overlap = await readFile(join(reportOut, "pages/07-question-overlap.md"), "utf8");
+    expect(overlap).toContain("# 07 Question Overlap");
+    expect(overlap).toContain("overlapping entries:");
+    expect(overlap).toContain("total entries analyzed:");
+
+    const gaps = await readFile(join(reportOut, "pages/08-coverage-gaps.md"), "utf8");
+    expect(gaps).toContain("# 08 Coverage Gaps");
+    expect(gaps).toContain("## Class Coverage");
+
+    const correlation = await readFile(join(reportOut, "pages/09-insight-correlation.md"), "utf8");
+    expect(correlation).toContain("# 09 Insight Correlation");
+    expect(correlation).toContain("lenses active:");
+
+    const crossQuestion = JSON.parse(
+      await readFile(join(reportOut, "data/cross-question.json"), "utf8"),
+    );
+    expect(crossQuestion.schemaVersion).toBe(1);
+    expect(crossQuestion.questionCount).toBe(2);
+    expect(typeof crossQuestion.overlap.count).toBe("number");
+    expect(typeof crossQuestion.gaps.count).toBe("number");
+    expect(typeof crossQuestion.systemicLenses.count).toBe("number");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

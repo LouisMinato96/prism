@@ -360,10 +360,7 @@ export function renderStrictIssues(input: {
     lines.push("None.");
     lines.push("");
     lines.push(
-      "Strict gates v2.12 cover: confidence_below_min, question_class_ambiguous, evidence_pack_incomplete, fail_open_required, missing_code_file.",
-    );
-    lines.push(
-      "Missing-artifact gates (graph, repo-index, final-index, service-flow) land in v2.13+.",
+      "Strict gates v2.13 cover: confidence_below_min, question_class_ambiguous, evidence_pack_incomplete, fail_open_required, missing_code_file, missing_graph, missing_repo_index, missing_final_index, missing_service_flow_page.",
     );
     return lines.join("\n") + "\n";
   }
@@ -508,6 +505,225 @@ export function renderQuestionPage(input: {
         `| ${index + 1} | ${insight.severity} | ${insight.lens} | ${insight.entry} | ${escapeTableCell(insight.title)} | ${insight.occurrences} |`,
       );
     });
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function renderQuestionOverlap(questions: NormalizedQuestion[]): string {
+  const lines: string[] = [];
+  lines.push("# 07 Question Overlap");
+  lines.push("");
+  lines.push(
+    "Entries that appear in more than one question. Shared entries signal foundational code that multiple investigations converge on.",
+  );
+  lines.push("");
+
+  const entryQuestions = new Map<string, Set<string>>();
+  const entryClasses = new Map<string, Set<string>>();
+  for (const question of questions) {
+    for (const entry of question.entries) {
+      if (!entry.path) continue;
+      const digests = entryQuestions.get(entry.path) ?? new Set();
+      digests.add(question.digest);
+      entryQuestions.set(entry.path, digests);
+      const classes = entryClasses.get(entry.path) ?? new Set();
+      classes.add(question.class);
+      entryClasses.set(entry.path, classes);
+    }
+  }
+
+  const overlaps = [...entryQuestions.entries()]
+    .filter(([, digests]) => digests.size > 1)
+    .map(([path, digests]) => ({
+      path,
+      questionCount: digests.size,
+      digests: [...digests].sort(),
+      sharedClasses: [...(entryClasses.get(path) ?? [])].sort(),
+    }))
+    .sort((a, b) => b.questionCount - a.questionCount || a.path.localeCompare(b.path));
+
+  lines.push(`- overlapping entries: ${overlaps.length}`);
+  lines.push(`- total entries analyzed: ${entryQuestions.size}`);
+  lines.push("");
+
+  if (overlaps.length === 0) {
+    lines.push("No entries shared across multiple questions.");
+    if (questions.length < 2) {
+      lines.push("");
+      lines.push(
+        "(Cross-question analysis requires 2+ questions. Rerun with `--emit-json` and multiple questions.)",
+      );
+    }
+    return lines.join("\n") + "\n";
+  }
+
+  lines.push("| # | entry path | question count | questions | shared classes |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  overlaps.slice(0, 30).forEach((row, index) => {
+    lines.push(
+      `| ${index + 1} | \`${row.path}\` | ${row.questionCount} | ${row.digests.map((d) => `\`${d}\``).join(", ")} | ${row.sharedClasses.join(", ")} |`,
+    );
+  });
+  if (overlaps.length > 30) {
+    lines.push("");
+    lines.push(
+      `Showing first 30 of ${overlaps.length} overlapping entries. See \`data/cross-question.json\` for full list.`,
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+export function renderCoverageGaps(questions: NormalizedQuestion[]): string {
+  const lines: string[] = [];
+  lines.push("# 08 Coverage Gaps");
+  lines.push("");
+  lines.push(
+    "Aggregate evidence-pack gaps and question-class coverage across all questions.",
+  );
+  lines.push("");
+
+  const missingRequirements = new Map<string, string[]>();
+  for (const question of questions) {
+    for (const missing of question.evidencePackMissing) {
+      const affected = missingRequirements.get(missing) ?? [];
+      affected.push(question.digest);
+      missingRequirements.set(missing, affected);
+    }
+  }
+
+  const classCoverage = new Map<
+    string,
+    { count: number; lowConfidence: number; noJson: number }
+  >();
+  for (const question of questions) {
+    const entry = classCoverage.get(question.class) ?? {
+      count: 0,
+      lowConfidence: 0,
+      noJson: 0,
+    };
+    entry.count += 1;
+    if (question.confidence?.level === "low") entry.lowConfidence += 1;
+    if (!question.answerJsonPresent) entry.noJson += 1;
+    classCoverage.set(question.class, entry);
+  }
+
+  lines.push(`- unmet requirements: ${missingRequirements.size}`);
+  lines.push(`- question classes observed: ${classCoverage.size}`);
+  lines.push("");
+
+  lines.push("## Unmet Evidence Requirements");
+  lines.push("");
+  if (missingRequirements.size === 0) {
+    lines.push("All evidence-pack requirements satisfied across all questions.");
+    lines.push("");
+  } else {
+    lines.push("| requirement | affected questions | question digests |");
+    lines.push("| --- | --- | --- |");
+    const sortedReqs = [...missingRequirements.entries()].sort(
+      (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+    );
+    for (const [req, digests] of sortedReqs) {
+      lines.push(
+        `| ${escapeTableCell(req)} | ${digests.length} | ${digests
+          .sort()
+          .map((d) => `\`${d}\``)
+          .join(", ")} |`,
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push("## Class Coverage");
+  lines.push("");
+  if (classCoverage.size === 0) {
+    lines.push("No questions.");
+    lines.push("");
+  } else {
+    lines.push("| class | question count | low-confidence | no-json-sidecar |");
+    lines.push("| --- | --- | --- | --- |");
+    const sortedClasses = [...classCoverage.entries()].sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    );
+    for (const [cls, stats] of sortedClasses) {
+      lines.push(
+        `| ${cls} | ${stats.count} | ${stats.lowConfidence} | ${stats.noJson} |`,
+      );
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+export interface InsightCorrelationRow {
+  lens: string;
+  findingCount: number;
+  entryCount: number;
+  severityDistribution: Record<string, number>;
+  topEntries: string[];
+}
+
+export function renderInsightCorrelation(questions: NormalizedQuestion[]): string {
+  const lines: string[] = [];
+  lines.push("# 09 Insight Correlation");
+  lines.push("");
+  lines.push(
+    "Aggregate insight lenses across all questions. Lenses firing across multiple entries signal systemic issues rather than isolated findings.",
+  );
+  lines.push("");
+
+  const byLens = new Map<
+    string,
+    { count: number; entries: Set<string>; severity: Record<string, number> }
+  >();
+  for (const question of questions) {
+    for (const insight of question.insights) {
+      const current = byLens.get(insight.lens) ?? {
+        count: 0,
+        entries: new Set<string>(),
+        severity: {},
+      };
+      current.count += insight.occurrences;
+      if (insight.entry) current.entries.add(insight.entry);
+      current.severity[insight.severity] = (current.severity[insight.severity] ?? 0) + 1;
+      byLens.set(insight.lens, current);
+    }
+  }
+
+  const rows: InsightCorrelationRow[] = [...byLens.entries()]
+    .map(([lens, data]) => ({
+      lens,
+      findingCount: data.count,
+      entryCount: data.entries.size,
+      severityDistribution: data.severity,
+      topEntries: [...data.entries].sort().slice(0, 5),
+    }))
+    .sort((a, b) => b.findingCount - a.findingCount || a.lens.localeCompare(b.lens));
+
+  lines.push(`- lenses active: ${rows.length}`);
+  lines.push(`- systemic (3+ entries): ${rows.filter((r) => r.entryCount >= 3).length}`);
+  lines.push("");
+
+  if (rows.length === 0) {
+    lines.push("No insight data available.");
+    lines.push("");
+    lines.push(
+      "(Rerun `prism knowledge answer` with `--emit-json` to populate insight correlation.)",
+    );
+    return lines.join("\n") + "\n";
+  }
+
+  lines.push(
+    "| lens | finding count | entry count | high | medium | low | info | top entries |",
+  );
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const row of rows) {
+    const topStr = row.topEntries.map((e) => `\`${e}\``).join(", ");
+    lines.push(
+      `| ${row.lens} | ${row.findingCount} | ${row.entryCount} | ${row.severityDistribution["high"] ?? 0} | ${row.severityDistribution["medium"] ?? 0} | ${row.severityDistribution["low"] ?? 0} | ${row.severityDistribution["info"] ?? 0} | ${topStr} |`,
+    );
   }
   lines.push("");
   return lines.join("\n");

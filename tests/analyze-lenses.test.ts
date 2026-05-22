@@ -30,10 +30,10 @@ async function runLensFixture(input: {
   return AnalyzeInsightsSchema.parse(insightsJson);
 }
 
-test("LENSES registry has 8 unique stable ids", () => {
-  expect(LENSES.length).toBe(8);
+test("LENSES registry has 12 unique stable ids", () => {
+  expect(LENSES.length).toBe(12);
   const ids = LENSES.map((lens) => lens.id);
-  expect(new Set(ids).size).toBe(8);
+  expect(new Set(ids).size).toBe(12);
   expect(ids).toEqual([
     "hook-deps-mismatch",
     "complexity-hotspot",
@@ -43,6 +43,10 @@ test("LENSES registry has 8 unique stable ids", () => {
     "await-in-loop",
     "security-quick-win",
     "todo-density",
+    "console-log",
+    "unused-imports",
+    "promise-error-handling",
+    "magic-number",
   ]);
 });
 
@@ -205,6 +209,127 @@ export function C(props: { x: number }) {
     const first = await runLensFixture({ baseDir });
     const second = await runLensFixture({ baseDir });
     expect(JSON.stringify(second.insights)).toBe(JSON.stringify(first.insights));
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("console-log flags console.log, console.warn, and debugger statement", async () => {
+  const baseDir = await setupFixture(`
+export function debug(x: number) {
+  console.log("value:", x);
+  console.warn("warning");
+  console.error("error");
+  debugger;
+  return x;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "console-log");
+    expect(hits.length).toBeGreaterThanOrEqual(4);
+    const titles = hits.map((i) => i.title);
+    expect(titles).toContain("console.log() call");
+    expect(titles).toContain("console.warn() call");
+    expect(titles).toContain("console.error() call");
+    expect(titles).toContain("debugger statement");
+    const logHit = hits.find((i) => i.title === "console.log() call")!;
+    expect(logHit.severity).toBe("info");
+    const warnHit = hits.find((i) => i.title === "console.warn() call")!;
+    expect(warnHit.severity).toBe("low");
+    const debugHit = hits.find((i) => i.title === "debugger statement")!;
+    expect(debugHit.severity).toBe("medium");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("unused-imports flags unused import but not used ones", async () => {
+  const baseDir = await setupFixture(`
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+
+export function check() {
+  return existsSync("/tmp");
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "unused-imports");
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.title).toContain("join");
+    expect(hits[0]!.severity).toBe("low");
+    expect(hits[0]!.evidence![0]!.detail).toContain("node:path");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("promise-error-handling flags .then() without .catch()", async () => {
+  const baseDir = await setupFixture(`
+export function run() {
+  fetch("/api").then((r) => r.json());
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "promise-error-handling");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.severity).toBe("medium");
+    expect(hits[0]!.title).toContain(".then()");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("promise-error-handling ignores .then() with .catch() in chain", async () => {
+  const baseDir = await setupFixture(`
+export function run() {
+  fetch("/api").then((r) => r.json()).catch((e) => console.error(e));
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter(
+      (i) => i.lens === "promise-error-handling" && i.title.includes(".then()"),
+    );
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("magic-number flags numeric literals outside const declarations", async () => {
+  const baseDir = await setupFixture(`
+export function calc(x: number) {
+  return x * 42 + 100 + 200;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "magic-number");
+    expect(hits.length).toBeGreaterThanOrEqual(3);
+    const values = hits.map((i) => i.title);
+    expect(values.some((t) => t.includes("42"))).toBe(true);
+    expect(values.some((t) => t.includes("100"))).toBe(true);
+    expect(values.some((t) => t.includes("200"))).toBe(true);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("magic-number ignores 0, 1, -1 and const declarations", async () => {
+  const baseDir = await setupFixture(`
+const MAX = 10;
+export function simple(arr: number[]) {
+  if (arr.length === 0) return -1;
+  return arr[0]! + 1;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "magic-number");
+    expect(hits.length).toBe(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

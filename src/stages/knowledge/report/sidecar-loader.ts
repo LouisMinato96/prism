@@ -44,6 +44,7 @@ export interface NormalizedQuestion {
     lens: string;
     occurrences: number;
   }>;
+  artifactGaps: Array<{ category: string; detail: string }>;
   markdownPath?: string;
   classificationPath: string;
   evidencePackPath: string;
@@ -200,6 +201,7 @@ interface AnswerJson {
     lens?: string;
     occurrences?: number;
   }>;
+  artifactGaps?: Array<{ category?: string; detail?: string }>;
 }
 
 function buildNormalizedQuestion(input: {
@@ -252,6 +254,15 @@ function buildNormalizedQuestion(input: {
           a.severity.localeCompare(b.severity) ||
           a.entry.localeCompare(b.entry) ||
           a.title.localeCompare(b.title),
+      ),
+    artifactGaps: (input.answerJson?.artifactGaps ?? [])
+      .map((gap) => ({
+        category: gap.category ?? "",
+        detail: gap.detail ?? "",
+      }))
+      .sort(
+        (a, b) =>
+          a.category.localeCompare(b.category) || a.detail.localeCompare(b.detail),
       ),
     markdownPath: input.markdownPath,
     classificationPath: input.classificationPath,

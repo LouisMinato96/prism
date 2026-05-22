@@ -400,6 +400,7 @@ interface KnowledgeAnswerJson {
     missingRequirements: string[];
   };
   limits: string[];
+  artifactGaps: Array<{ category: string; detail: string }>;
 }
 
 interface LoadedKnowledge {
@@ -1280,6 +1281,9 @@ async function renderAnswer(input: {
       missingRequirements: failOpen.missingRequirements,
     },
     limits,
+    artifactGaps: collectCriticalArtifactGaps(entryMatches, artifactEvidenceByEntry).map(
+      (gap) => ({ category: gap.category, detail: gap.detail }),
+    ),
   };
 
   const classification = KnowledgeQuestionClassificationSchema.parse({

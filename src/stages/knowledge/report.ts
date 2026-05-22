@@ -25,12 +25,15 @@ import {
 } from "./report/teaching.ts";
 import {
   renderClassBreakdown,
+  renderCoverageGaps,
   renderDiagramIndex,
   renderEvidenceMap,
   renderFollowUp,
   renderIndex,
+  renderInsightCorrelation,
   renderIntegritySignals,
   renderOverview,
+  renderQuestionOverlap,
   renderQuestionPage,
   renderStrictIssues,
   renderValidationReport,
@@ -221,6 +224,27 @@ export async function runKnowledgeAnswerReport(
       summary: "diagrams referenced across questions (full discovery v2.12)",
       content: renderDiagramIndex(diagrams),
     },
+    {
+      name: "question-overlap",
+      file: "07-question-overlap.md",
+      title: "07 Question Overlap",
+      summary: "entries appearing in multiple questions with shared classes",
+      content: renderQuestionOverlap(sidecars.questions),
+    },
+    {
+      name: "coverage-gaps",
+      file: "08-coverage-gaps.md",
+      title: "08 Coverage Gaps",
+      summary: "aggregate unmet evidence requirements and class coverage",
+      content: renderCoverageGaps(sidecars.questions),
+    },
+    {
+      name: "insight-correlation",
+      file: "09-insight-correlation.md",
+      title: "09 Insight Correlation",
+      summary: "lens findings aggregated across questions — systemic issues",
+      content: renderInsightCorrelation(sidecars.questions),
+    },
   ];
 
   const teachingInput = await loadTeachingInput({
@@ -267,6 +291,7 @@ export async function runKnowledgeAnswerReport(
     questions: sidecars.questions,
     issuesByDigest,
     strictSummary,
+    insights: teachingInput.insights,
     force,
   });
 
