@@ -16,6 +16,7 @@ import {
   resolveKnowledgeAnswerOptions,
   resolveKnowledgeAnswerReportOptions,
   resolveKnowledgeBuildOptions,
+  resolveKnowledgeDiffOptions,
   resolveKnowledgeUpdateOptions,
 } from "./lib/knowledge-options.ts";
 import {
@@ -27,6 +28,7 @@ import { runKnowledgeBuild } from "./stages/knowledge/build.ts";
 import { runKnowledgeAnswer } from "./stages/knowledge/answer.ts";
 import { runKnowledgeAnswerReport } from "./stages/knowledge/report.ts";
 import { runKnowledgeUpdate } from "./stages/knowledge/update.ts";
+import { runKnowledgeDiff, formatDiffMarkdown } from "./stages/knowledge/diff.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -41,6 +43,7 @@ USAGE:
   prism knowledge answer --questions-file <path> [options]
   prism knowledge answer-report [options]
   prism knowledge update --from <commit> --to <commit> [options]
+  prism knowledge diff --base <path> --head <path> [options]
 
 OPTIONS:
   --force              Re-run all stages, ignoring cached output
@@ -75,6 +78,9 @@ OPTIONS:
   --min-confidence <low|medium|high> Knowledge answer strict mode: minimum required confidence
   --answers-dir <path>  Knowledge answer-report command: input answers directory (default: .prism/knowledge/answers)
   --report-out <path>   Knowledge answer-report command: output directory (default: <knowledge-root>/answer-reports/<digest>)
+  --base <path>         Knowledge diff command: base report directory
+  --head <path>         Knowledge diff command: head report directory
+  --json                Knowledge diff command: emit machine-readable JSON
   --help               Show this message
 
 ENV VARS:
@@ -121,6 +127,9 @@ async function main() {
       "min-confidence": { type: "string" },
       "answers-dir": { type: "string" },
       "report-out": { type: "string" },
+      base: { type: "string" },
+      head: { type: "string" },
+      json: { type: "boolean", default: false },
       out: { type: "string" },
       help: { type: "boolean", default: false },
     },
@@ -310,6 +319,35 @@ async function main() {
       });
       log.done(result.reportPath, "update-report");
       log.done(result.reportMarkdownPath, "update-report-md");
+      return;
+    }
+
+    if (subcmd === "diff") {
+      let diffOptions: ReturnType<typeof resolveKnowledgeDiffOptions>;
+      try {
+        diffOptions = resolveKnowledgeDiffOptions({
+          base: values.base as string | undefined,
+          head: values.head as string | undefined,
+          strict: values.strict === true,
+          json: values.json === true,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "knowledge:diff");
+        process.exit(1);
+      }
+
+      const result = await runKnowledgeDiff(diffOptions);
+      if (diffOptions.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(formatDiffMarkdown(result));
+      }
+      log.done(`verdict: ${result.verdict} (score: ${result.score})`, "knowledge:diff");
+      if (diffOptions.strict && result.verdict === "regressed") {
+        log.error("regression detected in strict diff mode", "knowledge:diff");
+        process.exit(1);
+      }
       return;
     }
 

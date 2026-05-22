@@ -25,6 +25,13 @@ export interface ResolvedKnowledgeAnswerReportOptions {
   minConfidence?: "low" | "medium" | "high";
 }
 
+export interface ResolvedKnowledgeDiffOptions {
+  basePath: string;
+  headPath: string;
+  strict: boolean;
+  json: boolean;
+}
+
 export interface ResolvedKnowledgeUpdateOptions {
   repoRoot: string;
   knowledgeRoot: string;
@@ -174,6 +181,23 @@ export function resolveKnowledgeAnswerOptions(values: {
     strict,
     minConfidence: minConfidenceRaw as "low" | "medium" | "high" | undefined,
   };
+}
+
+export function resolveKnowledgeDiffOptions(values: {
+  base?: string;
+  head?: string;
+  strict?: boolean;
+  json?: boolean;
+}): ResolvedKnowledgeDiffOptions {
+  const basePath = cleanOptional(values.base);
+  const headPath = cleanOptional(values.head);
+  const strict = values.strict === true;
+  const json = values.json === true;
+
+  if (!basePath) throw new Error("knowledge diff requires --base <path>");
+  if (!headPath) throw new Error("knowledge diff requires --head <path>");
+
+  return { basePath, headPath, strict, json };
 }
 
 function cleanOption(value: string | undefined, fallback: string): string {

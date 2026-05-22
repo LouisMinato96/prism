@@ -302,6 +302,86 @@ const TOPICS: TeachingTopic[] = [
       },
     ],
   },
+  {
+    file: "22-no-floating-promises.md",
+    title: "22 No Floating Promises",
+    summary: "Async function calls without await, void, or .catch()",
+    lensIds: ["no-floating-promises"],
+    intro:
+      "A floating promise is an async call whose result is discarded at statement level — no await, no void, no .then()/.catch(). If the promise rejects, the error is unhandled. This lens uses heuristics: async modifier, Promise return type annotation, or common async name prefixes (fetch, send, post, etc.).",
+    guidance:
+      "Add await if the caller should wait. Add void if fire-and-forget is intentional — this documents the intent and silences the lint. Add .catch() if you need to handle errors without awaiting. Known limitation: AST-only analysis cannot resolve return types through call chains.",
+    references: [
+      {
+        label: "typescript-eslint no-floating-promises",
+        url: "https://typescript-eslint.io/rules/no-floating-promises/",
+      },
+      {
+        label: "MDN: void operator",
+        url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/void",
+      },
+    ],
+  },
+  {
+    file: "23-duplicate-string-literals.md",
+    title: "23 Duplicate String Literals",
+    summary: "String literals appearing 3+ times in the same file",
+    lensIds: ["duplicate-string-literal"],
+    intro:
+      "Duplicated string literals make changes error-prone — updating one occurrence but missing others causes subtle bugs. This lens flags strings (≥3 chars) appearing 3+ times in the same file, excluding import paths, type positions, and property name keys.",
+    guidance:
+      "Extract duplicated strings to a named constant at module scope. For strings shared across files, consider a constants module. Short strings (<3 chars) and import specifiers are excluded to reduce noise.",
+    references: [
+      {
+        label: "SonarSource: String literals should not be duplicated (RSPEC-1192)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-1192/",
+      },
+      {
+        label: "Refactoring.guru: Replace Magic Literal",
+        url: "https://refactoring.guru/replace-magic-number-with-symbolic-constant",
+      },
+    ],
+  },
+  {
+    file: "24-excessive-nesting.md",
+    title: "24 Excessive Nesting",
+    summary: "Control flow nested beyond 4 levels deep",
+    lensIds: ["excessive-nesting"],
+    intro:
+      "Deep nesting forces readers to track multiple conditions simultaneously. Unlike cyclomatic complexity (which counts branches), this lens measures depth — a single long chain of if/for/try blocks scores high here even with low branch count. Threshold is 5 levels; 7+ is medium severity.",
+    guidance:
+      "Flatten with early returns and guard clauses. Extract nested blocks into named helper functions. Replace nested conditionals with lookup tables or polymorphism. Each extracted function should have a clear single responsibility.",
+    references: [
+      {
+        label: "SonarSource: Control flow nesting depth (RSPEC-134)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-134/",
+      },
+      {
+        label: "Refactoring.guru: Replace Nested Conditional with Guard Clauses",
+        url: "https://refactoring.guru/replace-nested-conditional-with-guard-clauses",
+      },
+    ],
+  },
+  {
+    file: "25-implicit-any-return.md",
+    title: "25 Implicit Return Types",
+    summary: "Functions without explicit return type annotations",
+    lensIds: ["implicit-any-return"],
+    intro:
+      "TypeScript infers return types well in many cases, but omitting explicit annotations means the contract is implicit. Changes to the function body silently change the return type, which can propagate unexpected types to callers. This lens flags functions with return statements but no type annotation. Arrow expressions (single-expression bodies) are excluded.",
+    guidance:
+      "Add explicit return types to exported functions and public methods first — these form the module's contract. Internal helpers benefit less from annotations. Some teams prefer inference everywhere; this lens is informational, not prescriptive.",
+    references: [
+      {
+        label: "typescript-eslint explicit-function-return-type",
+        url: "https://typescript-eslint.io/rules/explicit-function-return-type/",
+      },
+      {
+        label: "TypeScript Handbook: Return Type Annotations",
+        url: "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#return-type-annotations",
+      },
+    ],
+  },
 ];
 
 export function renderTeachingPages(input: TeachingInput): TeachingPage[] {
@@ -589,5 +669,41 @@ const GLOSSARY: GlossaryEntry[] = [
     metric: "magic-number-count per function (threshold 3)",
     docsLabel: "SonarSource magic number (RSPEC-109)",
     docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-109/",
+  },
+  {
+    id: "no-floating-promises",
+    description:
+      "Detects async function calls at statement level without await, void, or .then()/.catch(). Uses heuristics: async modifier, Promise return type annotation, or common async name prefixes. AST-only — cannot resolve return types through call chains.",
+    severityLadder: "medium (confirmed async), low (heuristic match)",
+    metric: "none (categorical)",
+    docsLabel: "typescript-eslint no-floating-promises",
+    docsUrl: "https://typescript-eslint.io/rules/no-floating-promises/",
+  },
+  {
+    id: "duplicate-string-literal",
+    description:
+      "Detects string literals (≥3 chars) appearing 3+ times in the same file. Excludes import/require paths, type/interface positions, enum members, and property name keys.",
+    severityLadder: "info (3–4 occurrences), low (5+)",
+    metric: "duplicate-count per string per file (threshold 3)",
+    docsLabel: "SonarSource string literal duplication (RSPEC-1192)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-1192/",
+  },
+  {
+    id: "excessive-nesting",
+    description:
+      "Measures maximum control flow nesting depth per function (if/for/while/switch/try). Distinct from complexity-hotspot: complexity counts branches, nesting counts depth. Reports the deepest nesting point per function.",
+    severityLadder: "low (depth 5), medium (depth 7+)",
+    metric: "max-nesting-depth per function (threshold 5)",
+    docsLabel: "SonarSource control flow nesting (RSPEC-134)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-134/",
+  },
+  {
+    id: "implicit-any-return",
+    description:
+      "Detects functions with return statements but no explicit return type annotation. Excludes arrow expression bodies (single-expression) and void functions (no return value). Informational — TypeScript inference is often correct, but explicit types document intent.",
+    severityLadder: "info (standalone), low (3+ per file)",
+    metric: "implicit-return-count per file (threshold 3)",
+    docsLabel: "typescript-eslint explicit-function-return-type",
+    docsUrl: "https://typescript-eslint.io/rules/explicit-function-return-type/",
   },
 ];

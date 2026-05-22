@@ -9,7 +9,8 @@ export type StrictCategory =
   | "missing_graph"
   | "missing_repo_index"
   | "missing_final_index"
-  | "missing_service_flow_page";
+  | "missing_service_flow_page"
+  | "schema_version_mismatch";
 
 export interface StrictIssue {
   questionDigest: string;
@@ -139,4 +140,20 @@ export function buildStrictSummary(
     issueCount,
     categories,
   };
+}
+
+export const EXPECTED_PACK_SCHEMA_VERSION = 1;
+
+export function evaluatePackStrict(packSchemaVersion: number): StrictIssue[] {
+  if (packSchemaVersion !== EXPECTED_PACK_SCHEMA_VERSION) {
+    return [
+      {
+        questionDigest: "*",
+        question: "(pack-level)",
+        category: "schema_version_mismatch",
+        detail: `knowledge-pack schemaVersion=${packSchemaVersion}, expected=${EXPECTED_PACK_SCHEMA_VERSION}`,
+      },
+    ];
+  }
+  return [];
 }

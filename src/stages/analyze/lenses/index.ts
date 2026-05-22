@@ -18,6 +18,10 @@ import { detect as consoleLog } from "./console-log.ts";
 import { detect as unusedImports } from "./unused-imports.ts";
 import { detect as promiseErrorHandling } from "./promise-error-handling.ts";
 import { detect as magicNumber } from "./magic-number.ts";
+import { detect as noFloatingPromises } from "./no-floating-promises.ts";
+import { detect as duplicateStringLiteral } from "./duplicate-string-literal.ts";
+import { detect as excessiveNesting } from "./excessive-nesting.ts";
+import { detect as implicitAnyReturn } from "./implicit-any-return.ts";
 
 export interface LensInput {
   entry: string;
@@ -46,6 +50,10 @@ export const LENSES: readonly Lens[] = [
   { id: "unused-imports", detect: unusedImports },
   { id: "promise-error-handling", detect: promiseErrorHandling },
   { id: "magic-number", detect: magicNumber },
+  { id: "no-floating-promises", detect: noFloatingPromises },
+  { id: "duplicate-string-literal", detect: duplicateStringLiteral },
+  { id: "excessive-nesting", detect: excessiveNesting },
+  { id: "implicit-any-return", detect: implicitAnyReturn },
 ];
 
 export function runLenses(input: LensInput): AnalyzeInsight[] {

@@ -17,12 +17,14 @@ export async function writeDataFiles(input: {
   strictRollupPath: string;
   lensFindingsPath: string;
   crossQuestionPath: string;
+  evidenceSaturationPath: string;
 }> {
   const questionsPath = join(input.dataDirAbs, "questions.json");
   const entriesRollupPath = join(input.dataDirAbs, "entries-rollup.json");
   const strictRollupPath = join(input.dataDirAbs, "strict-rollup.json");
   const lensFindingsPath = join(input.dataDirAbs, "lens-findings.json");
   const crossQuestionPath = join(input.dataDirAbs, "cross-question.json");
+  const evidenceSaturationPath = join(input.dataDirAbs, "evidence-saturation.json");
 
   await writeJsonIfChanged(
     questionsPath,
@@ -91,12 +93,16 @@ export async function writeDataFiles(input: {
   const crossQuestion = buildCrossQuestionData(input.questions);
   await writeJsonIfChanged(crossQuestionPath, crossQuestion, input.force);
 
+  const evidenceSaturation = buildEvidenceSaturation(input.questions);
+  await writeJsonIfChanged(evidenceSaturationPath, evidenceSaturation, input.force);
+
   return {
     questionsPath,
     entriesRollupPath,
     strictRollupPath,
     lensFindingsPath,
     crossQuestionPath,
+    evidenceSaturationPath,
   };
 }
 
@@ -285,5 +291,43 @@ function buildCrossQuestionData(questions: NormalizedQuestion[]) {
     overlap: { count: overlaps.length, entries: overlaps },
     gaps: { count: gaps.length, requirements: gaps },
     systemicLenses: { count: systemicLenses.length, lenses: systemicLenses },
+  };
+}
+
+function buildEvidenceSaturation(questions: NormalizedQuestion[]) {
+  const perQuestion = questions.map((question) => {
+    const scores = question.entries.map((e) => e.score).sort((a, b) => b - a);
+    const entryCount = scores.length;
+    return {
+      digest: question.digest,
+      entryCount,
+      scoreAtRank1: scores[0] ?? 0,
+      scoreAtRank3: scores[2] ?? 0,
+      scoreAtRank5: scores[4] ?? 0,
+      scoreAtRank10: scores[9] ?? 0,
+      topConcentration:
+        entryCount >= 2 && scores[1]! > 0
+          ? Math.round((scores[0]! / scores[1]!) * 100) / 100
+          : null,
+    };
+  });
+
+  const entryCounts = perQuestion.map((q) => q.entryCount).sort((a, b) => a - b);
+  const medianEntries =
+    entryCounts.length > 0 ? entryCounts[Math.floor(entryCounts.length / 2)]! : 0;
+  const sparse = perQuestion.filter((q) => q.entryCount < 3);
+  const concentrated = perQuestion.filter(
+    (q) => q.topConcentration !== null && q.topConcentration >= 2,
+  );
+
+  return {
+    schemaVersion: 1,
+    questionCount: questions.length,
+    aggregate: {
+      medianEntriesPerQuestion: medianEntries,
+      sparseQuestions: sparse.length,
+      concentratedQuestions: concentrated.length,
+    },
+    questions: perQuestion,
   };
 }

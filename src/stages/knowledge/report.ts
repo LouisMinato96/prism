@@ -13,6 +13,7 @@ import {
 import { loadAnswerSidecars } from "./report/sidecar-loader.ts";
 import {
   buildStrictSummary,
+  evaluatePackStrict,
   evaluateQuestionStrict,
   type StrictIssue,
   type StrictSummary,
@@ -123,6 +124,7 @@ export async function runKnowledgeAnswerReport(
 
   const sidecars = await loadAnswerSidecars(answersDirAbs);
   const integritySignals = await loadIntegritySignals(artifactsIndexPath);
+  const packSchemaVersion = await loadPackSchemaVersion(knowledgePackPath);
 
   const inputPaths = [
     knowledgePackPath,
@@ -154,6 +156,8 @@ export async function runKnowledgeAnswerReport(
         allStrictIssues.push(...issues);
       }
     }
+    const packIssues = evaluatePackStrict(packSchemaVersion);
+    allStrictIssues.push(...packIssues);
   }
   const strictSummary = options.strict
     ? buildStrictSummary(sidecars.questions, issuesByDigest)
@@ -465,5 +469,16 @@ async function loadDiagramsFromArtifactsIndex(
     );
   } catch {
     return [];
+  }
+}
+
+async function loadPackSchemaVersion(knowledgePackPath: string): Promise<number> {
+  try {
+    const raw = JSON.parse(await readFile(knowledgePackPath, "utf8")) as {
+      schemaVersion?: number;
+    };
+    return raw.schemaVersion ?? 1;
+  } catch {
+    return 1;
   }
 }

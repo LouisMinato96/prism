@@ -30,10 +30,10 @@ async function runLensFixture(input: {
   return AnalyzeInsightsSchema.parse(insightsJson);
 }
 
-test("LENSES registry has 12 unique stable ids", () => {
-  expect(LENSES.length).toBe(12);
+test("LENSES registry has 16 unique stable ids", () => {
+  expect(LENSES.length).toBe(16);
   const ids = LENSES.map((lens) => lens.id);
-  expect(new Set(ids).size).toBe(12);
+  expect(new Set(ids).size).toBe(16);
   expect(ids).toEqual([
     "hook-deps-mismatch",
     "complexity-hotspot",
@@ -47,6 +47,10 @@ test("LENSES registry has 12 unique stable ids", () => {
     "unused-imports",
     "promise-error-handling",
     "magic-number",
+    "no-floating-promises",
+    "duplicate-string-literal",
+    "excessive-nesting",
+    "implicit-any-return",
   ]);
 });
 
@@ -329,6 +333,161 @@ export function simple(arr: number[]) {
   try {
     const insights = await runLensFixture({ baseDir });
     const hits = insights.insights.filter((i) => i.lens === "magic-number");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("no-floating-promises flags unhandled async call", async () => {
+  const baseDir = await setupFixture(`
+async function doWork() {
+  return 42;
+}
+export function run() {
+  doWork();
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "no-floating-promises");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.title).toContain("doWork");
+    expect(hits[0]!.severity).toBe("medium");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("no-floating-promises ignores awaited and voided calls", async () => {
+  const baseDir = await setupFixture(`
+async function doWork() {
+  return 42;
+}
+export async function run() {
+  await doWork();
+  void doWork();
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "no-floating-promises");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("duplicate-string-literal flags string appearing 3+ times", async () => {
+  const baseDir = await setupFixture(`
+export function build() {
+  const a = "application/json";
+  const b = "application/json";
+  const c = "application/json";
+  return [a, b, c];
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "duplicate-string-literal");
+    expect(hits.length).toBe(1);
+    expect(hits[0]!.title).toContain("application/json");
+    expect(hits[0]!.metric?.value).toBe(3);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("duplicate-string-literal ignores strings with fewer than 3 occurrences", async () => {
+  const baseDir = await setupFixture(`
+export function build() {
+  const a = "content-type";
+  const b = "content-type";
+  return [a, b];
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "duplicate-string-literal");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("excessive-nesting flags deeply nested control flow", async () => {
+  const baseDir = await setupFixture(`
+export function deep(x: number, items: number[]) {
+  if (x > 0) {
+    for (const item of items) {
+      if (item > 0) {
+        try {
+          if (item > 10) {
+            console.log(item);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "excessive-nesting");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.metric?.name).toBe("max-nesting-depth");
+    expect(hits[0]!.metric!.value).toBeGreaterThanOrEqual(5);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("excessive-nesting ignores shallow functions", async () => {
+  const baseDir = await setupFixture(`
+export function shallow(x: number) {
+  if (x > 0) {
+    for (let i = 0; i < x; i++) {
+      console.log(i);
+    }
+  }
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "excessive-nesting");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("implicit-any-return flags function without return type annotation", async () => {
+  const baseDir = await setupFixture(`
+export function compute(x: number) {
+  return x * 2;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "implicit-any-return");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.title).toContain("compute");
+    expect(hits[0]!.severity).toBe("info");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("implicit-any-return ignores functions with explicit return type", async () => {
+  const baseDir = await setupFixture(`
+export function compute(x: number): number {
+  return x * 2;
+}
+export const add = (a: number, b: number) => a + b;
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "implicit-any-return");
     expect(hits.length).toBe(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
