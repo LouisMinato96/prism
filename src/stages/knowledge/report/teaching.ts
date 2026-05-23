@@ -190,7 +190,7 @@ const TOPICS: TeachingTopic[] = [
     file: "16-coupling-cohesion.md",
     title: "16 Coupling & Cohesion",
     summary: "Cycles, hubs, layer leaks, dead exports across the analyzed slice",
-    lensIds: ["coupling", "layering", "dead-code"],
+    lensIds: ["coupling-cycle", "coupling-hub", "layering", "dead-code"],
     intro:
       "Architectural signals from the dependency graph. Cycles complicate change. Hubs concentrate risk. Layer leaks (component → service direct calls) skip designed seams. Dead exports may be removable or signal missing call sites.",
     guidance:
@@ -379,6 +379,86 @@ const TOPICS: TeachingTopic[] = [
       {
         label: "TypeScript Handbook: Return Type Annotations",
         url: "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#return-type-annotations",
+      },
+    ],
+  },
+  {
+    file: "26-empty-catch.md",
+    title: "26 Empty Catch Blocks",
+    summary: "Catch blocks that silently swallow errors",
+    lensIds: ["empty-catch"],
+    intro:
+      "Empty catch blocks discard errors silently — the program continues as if nothing went wrong, hiding bugs and making debugging difficult. A catch block with only comments is nearly as bad: it signals awareness but takes no action.",
+    guidance:
+      "Log the error at minimum. Rethrow if the caller should handle it. If swallowing is intentional (e.g. optional cleanup), assign the error to a variable and add a comment explaining why. Never leave catch blocks completely empty.",
+    references: [
+      {
+        label: "SonarSource: Empty catch (RSPEC-2486)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-2486/",
+      },
+      {
+        label: "eslint no-empty",
+        url: "https://eslint.org/docs/latest/rules/no-empty",
+      },
+    ],
+  },
+  {
+    file: "27-long-parameter-list.md",
+    title: "27 Long Parameter Lists",
+    summary: "Functions with more than 4 parameters",
+    lensIds: ["long-parameter-list"],
+    intro:
+      "Functions with many parameters are harder to call correctly — callers must remember argument order, and adding a new parameter requires updating every call site. This lens flags functions with 5+ non-rest parameters.",
+    guidance:
+      "Group related parameters into an options/config object. Extract sub-functions that each take fewer arguments. Consider the builder pattern for complex construction. Rest parameters (...args) are excluded from the count.",
+    references: [
+      {
+        label: "SonarSource: Too many parameters (RSPEC-107)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-107/",
+      },
+      {
+        label: "Refactoring.guru: Long Parameter List",
+        url: "https://refactoring.guru/smells/long-parameter-list",
+      },
+    ],
+  },
+  {
+    file: "28-large-file.md",
+    title: "28 Large Files",
+    summary: "Files exceeding line count or declaration density thresholds",
+    lensIds: ["large-file"],
+    intro:
+      "Large files are harder to navigate, understand, and maintain. This lens flags files exceeding 300 lines (low) or 500 lines (medium), and files with 15+ top-level function/class declarations regardless of line count.",
+    guidance:
+      "Split by responsibility: extract related functions into separate modules. Consider one class per file. Use barrel files (index.ts) to re-export from smaller modules without changing import paths.",
+    references: [
+      {
+        label: "SonarSource: Files should not have too many lines of code (RSPEC-104)",
+        url: "https://rules.sonarsource.com/typescript/RSPEC-104/",
+      },
+      {
+        label: "Clean Code: Files should be small (Uncle Bob)",
+        url: "https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html",
+      },
+    ],
+  },
+  {
+    file: "29-switch-without-default.md",
+    title: "29 Switch Without Default",
+    summary: "Switch statements missing a default case",
+    lensIds: ["switch-without-default"],
+    intro:
+      "A switch statement without a default clause silently ignores unexpected values. If the set of cases is meant to be exhaustive, an unmatched value passes through with no action — hiding bugs that only surface at runtime.",
+    guidance:
+      "Add a default clause that either handles unexpected values, throws an error (for exhaustiveness checks), or contains a comment documenting why omission is safe. For TypeScript enums, use a never-type exhaustiveness check in the default case.",
+    references: [
+      {
+        label: "eslint default-case",
+        url: "https://eslint.org/docs/latest/rules/default-case",
+      },
+      {
+        label: "TypeScript exhaustiveness checking",
+        url: "https://www.typescriptlang.org/docs/handbook/2/narrowing.html#exhaustiveness-checking",
       },
     ],
   },
@@ -616,10 +696,19 @@ const GLOSSARY: GlossaryEntry[] = [
     docsUrl: "https://react.dev/reference/rules",
   },
   {
-    id: "coupling",
+    id: "coupling-cycle",
     description:
-      "Aggregates cycles in the architecture graph plus high fan-in / fan-out symbols. Cycles indicate change-amplifying loops. Hubs concentrate risk.",
-    severityLadder: "high for cycles, low fan-out, info fan-in",
+      "Detects cycles in the architecture graph by walking architectural edges (renders, calls, uses_hook, uses_context, provides_context, wraps). Cycles indicate change-amplifying dependency loops.",
+    severityLadder: "high",
+    metric: "none (categorical)",
+    docsLabel: "Wikipedia: Coupling",
+    docsUrl: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)",
+  },
+  {
+    id: "coupling-hub",
+    description:
+      "Identifies high fan-in and fan-out symbols in the architecture graph. Fan-out ≥4 concentrates outgoing risk; fan-in ≥4 marks central dependencies.",
+    severityLadder: "low (fan-out), info (fan-in)",
     metric: "none (categorical)",
     docsLabel: "Wikipedia: Coupling",
     docsUrl: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)",
@@ -705,5 +794,41 @@ const GLOSSARY: GlossaryEntry[] = [
     metric: "implicit-return-count per file (threshold 3)",
     docsLabel: "typescript-eslint explicit-function-return-type",
     docsUrl: "https://typescript-eslint.io/rules/explicit-function-return-type/",
+  },
+  {
+    id: "empty-catch",
+    description:
+      "Detects catch clauses with empty block bodies or blocks containing only comments. Empty catches silently swallow errors, hiding bugs and making debugging difficult.",
+    severityLadder: "medium (completely empty), low (comments only)",
+    metric: "none (categorical)",
+    docsLabel: "SonarSource empty catch (RSPEC-2486)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-2486/",
+  },
+  {
+    id: "long-parameter-list",
+    description:
+      "Detects functions with more than 4 non-rest parameters. Long parameter lists reduce readability, increase call-site errors, and often signal functions with too many responsibilities.",
+    severityLadder: "low (5–6 params), medium (7+)",
+    metric: "param-count per function (threshold 5)",
+    docsLabel: "SonarSource too many parameters (RSPEC-107)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-107/",
+  },
+  {
+    id: "large-file",
+    description:
+      "Flags files exceeding line count thresholds (300 low, 500 medium) and files with 15+ top-level function/class declarations. Distinct from bloater (function-level); this is pure file-level size.",
+    severityLadder: "low (300–499 lines or 15+ declarations), medium (500+ lines)",
+    metric: "file-line-count per file (threshold 300)",
+    docsLabel: "SonarSource files should not be too long (RSPEC-104)",
+    docsUrl: "https://rules.sonarsource.com/typescript/RSPEC-104/",
+  },
+  {
+    id: "switch-without-default",
+    description:
+      "Detects switch statements without a default clause. Unmatched values fall through silently, which may hide unexpected inputs or break exhaustiveness expectations.",
+    severityLadder: "info",
+    metric: "none (categorical)",
+    docsLabel: "eslint default-case",
+    docsUrl: "https://eslint.org/docs/latest/rules/default-case",
   },
 ];

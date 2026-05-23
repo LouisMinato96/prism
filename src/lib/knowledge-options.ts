@@ -200,6 +200,39 @@ export function resolveKnowledgeDiffOptions(values: {
   return { basePath, headPath, strict, json };
 }
 
+export function resolveKnowledgeDiffHistoryOptions(values: {
+  base?: string;
+  head?: string;
+  history?: string;
+  json?: boolean;
+}): ResolvedKnowledgeDiffHistoryOptions {
+  const basePath = cleanOptional(values.base);
+  const headPath = cleanOptional(values.head);
+  const historyPath = cleanOptional(values.history);
+  const json = values.json === true;
+
+  if (!historyPath) {
+    throw new Error("knowledge diff-history requires --history <path>");
+  }
+
+  const isAppendMode = basePath !== undefined || headPath !== undefined;
+  if (isAppendMode && !basePath) {
+    throw new Error("knowledge diff-history append mode requires --base <path>");
+  }
+  if (isAppendMode && !headPath) {
+    throw new Error("knowledge diff-history append mode requires --head <path>");
+  }
+
+  return { basePath, headPath, historyPath, json };
+}
+
+export interface ResolvedKnowledgeDiffHistoryOptions {
+  basePath?: string;
+  headPath?: string;
+  historyPath: string;
+  json: boolean;
+}
+
 function cleanOption(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
   if (!trimmed) return fallback;

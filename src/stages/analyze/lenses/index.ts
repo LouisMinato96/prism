@@ -22,6 +22,15 @@ import { detect as noFloatingPromises } from "./no-floating-promises.ts";
 import { detect as duplicateStringLiteral } from "./duplicate-string-literal.ts";
 import { detect as excessiveNesting } from "./excessive-nesting.ts";
 import { detect as implicitAnyReturn } from "./implicit-any-return.ts";
+import { detect as emptyCatch } from "./empty-catch.ts";
+import { detect as longParameterList } from "./long-parameter-list.ts";
+import { detect as largeFile } from "./large-file.ts";
+import { detect as switchWithoutDefault } from "./switch-without-default.ts";
+import { detect as layerViolation } from "./layer-violation.ts";
+import { detect as reactDirection } from "./react-direction.ts";
+import { detect as emptyDiagram } from "./empty-diagram.ts";
+import { detect as couplingCycle } from "./coupling-cycle.ts";
+import { detect as couplingHub } from "./coupling-hub.ts";
 
 export interface LensInput {
   entry: string;
@@ -54,6 +63,15 @@ export const LENSES: readonly Lens[] = [
   { id: "duplicate-string-literal", detect: duplicateStringLiteral },
   { id: "excessive-nesting", detect: excessiveNesting },
   { id: "implicit-any-return", detect: implicitAnyReturn },
+  { id: "empty-catch", detect: emptyCatch },
+  { id: "long-parameter-list", detect: longParameterList },
+  { id: "large-file", detect: largeFile },
+  { id: "switch-without-default", detect: switchWithoutDefault },
+  { id: "layering", detect: layerViolation },
+  { id: "react", detect: reactDirection },
+  { id: "diagrams", detect: emptyDiagram },
+  { id: "coupling-cycle", detect: couplingCycle },
+  { id: "coupling-hub", detect: couplingHub },
 ];
 
 export function runLenses(input: LensInput): AnalyzeInsight[] {

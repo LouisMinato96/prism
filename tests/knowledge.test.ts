@@ -8,6 +8,7 @@ import {
   resolveKnowledgeAnswerOptions,
   resolveKnowledgeAnswerReportOptions,
   resolveKnowledgeBuildOptions,
+  resolveKnowledgeDiffHistoryOptions,
   resolveKnowledgeDiffOptions,
   resolveKnowledgeUpdateOptions,
 } from "../src/lib/knowledge-options.ts";
@@ -24,6 +25,11 @@ import {
 import { runKnowledgeAnswerReport } from "../src/stages/knowledge/report.ts";
 import { runKnowledgeUpdate } from "../src/stages/knowledge/update.ts";
 import { runKnowledgeDiff, formatDiffMarkdown } from "../src/stages/knowledge/diff.ts";
+import {
+  runKnowledgeDiffHistory,
+  loadDiffHistory,
+  formatDiffHistoryMarkdown,
+} from "../src/stages/knowledge/diff-history.ts";
 
 test("knowledge build discovers multi-run and single-entry analyze artifacts", async () => {
   const baseDir = await createKnowledgeFixtureProject();
@@ -2510,7 +2516,7 @@ test("knowledge answer-report emits manifest and placeholder index", async () =>
     expect(result.manifest.counts.inputs).toBe(6);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
     expect(result.manifest.sources).toEqual([...result.manifest.sources].sort());
-    expect(result.manifest.pages.length).toBe(27);
+    expect(result.manifest.pages.length).toBe(31);
 
     const manifestOnDisk = JSON.parse(await readFile(result.manifestPath, "utf8"));
     expect(manifestOnDisk.digest).toBe(result.manifest.digest);
@@ -2646,7 +2652,7 @@ test("knowledge answer-report emits pages, per-question files, data, and validat
     expect(result.manifest.counts.answerJsonSidecars).toBe(2);
     expect(result.manifest.counts.markdownSidecars).toBe(2);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
-    expect(result.manifest.pages.length).toBe(27);
+    expect(result.manifest.pages.length).toBe(31);
 
     for (const page of [
       "00-overview.md",
@@ -2876,7 +2882,7 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       force: true,
     });
 
-    expect(result.manifest.pages.length).toBe(27);
+    expect(result.manifest.pages.length).toBe(31);
 
     for (const page of [
       "10-react-standards.md",
@@ -2895,6 +2901,10 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       "23-duplicate-string-literals.md",
       "24-excessive-nesting.md",
       "25-implicit-any-return.md",
+      "26-empty-catch.md",
+      "27-long-parameter-list.md",
+      "28-large-file.md",
+      "29-switch-without-default.md",
       "99-glossary.md",
     ]) {
       expect(existsSync(join(reportOut, "pages", page))).toBe(true);
@@ -2923,7 +2933,8 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       "todo-density",
       "layering",
       "react",
-      "coupling",
+      "coupling-cycle",
+      "coupling-hub",
       "diagrams",
       "console-log",
       "unused-imports",
@@ -2933,6 +2944,10 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       "duplicate-string-literal",
       "excessive-nesting",
       "implicit-any-return",
+      "empty-catch",
+      "long-parameter-list",
+      "large-file",
+      "switch-without-default",
     ]) {
       expect(glossary).toContain(`## ${lensId}`);
     }
@@ -3166,7 +3181,7 @@ test("knowledge answer-report e2e smoke: build → answer → report → verify"
     expect(result.manifest.schemaVersion).toBe(1);
     expect(result.manifest.counts.questions).toBe(2);
     expect(result.manifest.strict).toBe(true);
-    expect(result.manifest.pages.length).toBe(27);
+    expect(result.manifest.pages.length).toBe(31);
 
     const index = await readFile(result.indexPath, "utf8");
     expect(index).toContain("strict mode: enabled");
@@ -3513,7 +3528,7 @@ test("knowledge answer-report cross-question pages render with 2+ questions (v2.
     });
 
     expect(result.manifest.counts.questions).toBe(2);
-    expect(result.manifest.pages.length).toBe(27);
+    expect(result.manifest.pages.length).toBe(31);
 
     for (const page of [
       "07-question-overlap.md",
@@ -3800,4 +3815,185 @@ test("resolveKnowledgeDiffOptions validates required flags (v2.20)", () => {
   expect(opts.headPath).toBe("/b");
   expect(opts.strict).toBe(true);
   expect(opts.json).toBe(true);
+});
+
+test("knowledge diff-history append creates history file with 1 entry (v2.25)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/hist-run");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const historyPath = join(baseDir, "diff-history.json");
+    const history = await runKnowledgeDiffHistory({
+      basePath: reportOut,
+      headPath: reportOut,
+      historyPath,
+    });
+
+    expect(history.schemaVersion).toBe(1);
+    expect(history.entries.length).toBe(1);
+    expect(history.entries[0]!.verdict).toBe("unchanged");
+    expect(history.entries[0]!.score).toBe(0);
+    expect(history.entries[0]!.questionCount.base).toBeGreaterThan(0);
+    expect(history.entries[0]!.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    expect(existsSync(historyPath)).toBe(true);
+    const persisted = await loadDiffHistory(historyPath);
+    expect(persisted.entries.length).toBe(1);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge diff-history second append grows to 2 entries (v2.25)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/hist-run2");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const historyPath = join(baseDir, "diff-history2.json");
+    await runKnowledgeDiffHistory({
+      basePath: reportOut,
+      headPath: reportOut,
+      historyPath,
+    });
+    const history = await runKnowledgeDiffHistory({
+      basePath: reportOut,
+      headPath: reportOut,
+      historyPath,
+    });
+
+    expect(history.entries.length).toBe(2);
+    expect(history.entries[0]!.verdict).toBe("unchanged");
+    expect(history.entries[1]!.verdict).toBe("unchanged");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge diff-history read-only mode returns trend table (v2.25)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/hist-trend");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const historyPath = join(baseDir, "diff-history-trend.json");
+    await runKnowledgeDiffHistory({
+      basePath: reportOut,
+      headPath: reportOut,
+      historyPath,
+    });
+
+    const history = await loadDiffHistory(historyPath);
+    const md = formatDiffHistoryMarkdown(history);
+    expect(md).toContain("# Diff History Trend");
+    expect(md).toContain("| 1 |");
+    expect(md).toContain("unchanged");
+    expect(md).toContain("score");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge diff-history empty history renders no-entries message (v2.25)", () => {
+  const md = formatDiffHistoryMarkdown({ schemaVersion: 1, entries: [] });
+  expect(md).toContain("No entries recorded yet.");
+});
+
+test("resolveKnowledgeDiffHistoryOptions validates required flags (v2.25)", () => {
+  expect(() => resolveKnowledgeDiffHistoryOptions({})).toThrow("--history");
+  expect(() =>
+    resolveKnowledgeDiffHistoryOptions({ base: "/a", history: "/h" }),
+  ).toThrow("--head");
+  expect(() =>
+    resolveKnowledgeDiffHistoryOptions({ head: "/b", history: "/h" }),
+  ).toThrow("--base");
+
+  const readOnly = resolveKnowledgeDiffHistoryOptions({ history: "/h" });
+  expect(readOnly.historyPath).toBe("/h");
+  expect(readOnly.basePath).toBeUndefined();
+  expect(readOnly.headPath).toBeUndefined();
+
+  const append = resolveKnowledgeDiffHistoryOptions({
+    base: "/a",
+    head: "/b",
+    history: "/h",
+    json: true,
+  });
+  expect(append.basePath).toBe("/a");
+  expect(append.headPath).toBe("/b");
+  expect(append.historyPath).toBe("/h");
+  expect(append.json).toBe(true);
 });

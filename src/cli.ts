@@ -16,6 +16,7 @@ import {
   resolveKnowledgeAnswerOptions,
   resolveKnowledgeAnswerReportOptions,
   resolveKnowledgeBuildOptions,
+  resolveKnowledgeDiffHistoryOptions,
   resolveKnowledgeDiffOptions,
   resolveKnowledgeUpdateOptions,
 } from "./lib/knowledge-options.ts";
@@ -29,6 +30,11 @@ import { runKnowledgeAnswer } from "./stages/knowledge/answer.ts";
 import { runKnowledgeAnswerReport } from "./stages/knowledge/report.ts";
 import { runKnowledgeUpdate } from "./stages/knowledge/update.ts";
 import { runKnowledgeDiff, formatDiffMarkdown } from "./stages/knowledge/diff.ts";
+import {
+  runKnowledgeDiffHistory,
+  loadDiffHistory,
+  formatDiffHistoryMarkdown,
+} from "./stages/knowledge/diff-history.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
 
@@ -80,6 +86,7 @@ OPTIONS:
   --report-out <path>   Knowledge answer-report command: output directory (default: <knowledge-root>/answer-reports/<digest>)
   --base <path>         Knowledge diff command: base report directory
   --head <path>         Knowledge diff command: head report directory
+  --history <path>      Knowledge diff-history command: history file path
   --json                Knowledge diff command: emit machine-readable JSON
   --help               Show this message
 
@@ -129,6 +136,7 @@ async function main() {
       "report-out": { type: "string" },
       base: { type: "string" },
       head: { type: "string" },
+      history: { type: "string" },
       json: { type: "boolean", default: false },
       out: { type: "string" },
       help: { type: "boolean", default: false },
@@ -347,6 +355,43 @@ async function main() {
       if (diffOptions.strict && result.verdict === "regressed") {
         log.error("regression detected in strict diff mode", "knowledge:diff");
         process.exit(1);
+      }
+      return;
+    }
+
+    if (subcmd === "diff-history") {
+      let historyOptions: ReturnType<typeof resolveKnowledgeDiffHistoryOptions>;
+      try {
+        historyOptions = resolveKnowledgeDiffHistoryOptions({
+          base: values.base as string | undefined,
+          head: values.head as string | undefined,
+          history: values.history as string | undefined,
+          json: values.json === true,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(message, "knowledge:diff-history");
+        process.exit(1);
+      }
+
+      if (historyOptions.basePath && historyOptions.headPath) {
+        const history = await runKnowledgeDiffHistory({
+          basePath: historyOptions.basePath,
+          headPath: historyOptions.headPath,
+          historyPath: historyOptions.historyPath,
+        });
+        if (historyOptions.json) {
+          console.log(JSON.stringify(history, null, 2));
+        } else {
+          console.log(formatDiffHistoryMarkdown(history));
+        }
+      } else {
+        const history = await loadDiffHistory(historyOptions.historyPath);
+        if (historyOptions.json) {
+          console.log(JSON.stringify(history, null, 2));
+        } else {
+          console.log(formatDiffHistoryMarkdown(history));
+        }
       }
       return;
     }

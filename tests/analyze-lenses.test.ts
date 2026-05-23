@@ -30,10 +30,10 @@ async function runLensFixture(input: {
   return AnalyzeInsightsSchema.parse(insightsJson);
 }
 
-test("LENSES registry has 16 unique stable ids", () => {
-  expect(LENSES.length).toBe(16);
+test("LENSES registry has 25 unique stable ids", () => {
+  expect(LENSES.length).toBe(25);
   const ids = LENSES.map((lens) => lens.id);
-  expect(new Set(ids).size).toBe(16);
+  expect(new Set(ids).size).toBe(25);
   expect(ids).toEqual([
     "hook-deps-mismatch",
     "complexity-hotspot",
@@ -51,6 +51,15 @@ test("LENSES registry has 16 unique stable ids", () => {
     "duplicate-string-literal",
     "excessive-nesting",
     "implicit-any-return",
+    "empty-catch",
+    "long-parameter-list",
+    "large-file",
+    "switch-without-default",
+    "layering",
+    "react",
+    "diagrams",
+    "coupling-cycle",
+    "coupling-hub",
   ]);
 });
 
@@ -488,6 +497,152 @@ export const add = (a: number, b: number) => a + b;
   try {
     const insights = await runLensFixture({ baseDir });
     const hits = insights.insights.filter((i) => i.lens === "implicit-any-return");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("empty-catch flags catch block with no statements", async () => {
+  const baseDir = await setupFixture(`
+export function tryParse(json: string) {
+  try {
+    return JSON.parse(json);
+  } catch (e) {
+  }
+  return null;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "empty-catch");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.severity).toBe("medium");
+    expect(hits[0]!.title).toContain("Empty catch");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("empty-catch ignores catch blocks with executable statements", async () => {
+  const baseDir = await setupFixture(`
+export function tryParse(json: string) {
+  try {
+    return JSON.parse(json);
+  } catch (e) {
+    console.error(e);
+  }
+  return null;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "empty-catch");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("long-parameter-list flags function with 5+ parameters", async () => {
+  const baseDir = await setupFixture(`
+export function createUser(name: string, email: string, age: number, role: string, team: string) {
+  return { name, email, age, role, team };
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "long-parameter-list");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.severity).toBe("low");
+    expect(hits[0]!.metric!.name).toBe("param-count");
+    expect(hits[0]!.metric!.value).toBe(5);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("long-parameter-list ignores functions with 4 or fewer parameters", async () => {
+  const baseDir = await setupFixture(`
+export function add(a: number, b: number, c: number, d: number) {
+  return a + b + c + d;
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "long-parameter-list");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("large-file flags file exceeding 300 lines", async () => {
+  const lines = Array.from(
+    { length: 310 },
+    (_, i) => `export const v${i} = ${i};`,
+  ).join("\n");
+  const baseDir = await setupFixture(lines);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "large-file");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.severity).toBe("low");
+    expect(hits[0]!.metric!.name).toBe("file-line-count");
+    expect(hits[0]!.metric!.value).toBeGreaterThanOrEqual(300);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("large-file ignores files under 300 lines", async () => {
+  const baseDir = await setupFixture(`
+export const a = 1;
+export const b = 2;
+export const c = 3;
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "large-file");
+    expect(hits.length).toBe(0);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("switch-without-default flags switch missing default case", async () => {
+  const baseDir = await setupFixture(`
+export function classify(x: number) {
+  switch (x) {
+    case 1: return "one";
+    case 2: return "two";
+  }
+  return "unknown";
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "switch-without-default");
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.severity).toBe("info");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("switch-without-default ignores switch with default case", async () => {
+  const baseDir = await setupFixture(`
+export function classify(x: number) {
+  switch (x) {
+    case 1: return "one";
+    case 2: return "two";
+    default: return "other";
+  }
+}
+`);
+  try {
+    const insights = await runLensFixture({ baseDir });
+    const hits = insights.insights.filter((i) => i.lens === "switch-without-default");
     expect(hits.length).toBe(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
