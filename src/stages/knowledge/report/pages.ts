@@ -2,6 +2,7 @@ import { escapeTableCell, toDisplayPath } from "../../../lib/knowledge-render.ts
 import type { NormalizedQuestion } from "./sidecar-loader.ts";
 import type { StrictIssue, StrictSummary } from "./strict.ts";
 import type { EntryRollupRow } from "./data.ts";
+import type { KnowledgeInsightSummary } from "../../../schemas/knowledge.ts";
 
 const TOP_INSIGHTS_PER_QUESTION = 5;
 const TOP_ENTRIES_PER_QUESTION = 5;
@@ -726,5 +727,194 @@ export function renderInsightCorrelation(questions: NormalizedQuestion[]): strin
     );
   }
   lines.push("");
+  return lines.join("\n");
+}
+
+const CROSS_SLICE_SEVERITY_WEIGHT: Record<string, number> = {
+  high: 4,
+  medium: 3,
+  low: 2,
+  info: 1,
+};
+const TOP_HOTSPOTS = 30;
+const TOP_CO_OCCURRENCE = 30;
+
+export function renderCrossSlice(insights: KnowledgeInsightSummary[]): string {
+  const lines: string[] = [];
+  lines.push("# 30 Cross-Slice Analysis");
+  lines.push("");
+  lines.push(
+    "Repo-wide aggregation across all entries and lenses. Unlike page 09 (question-scoped), this page uses the full knowledge-pack insight set.",
+  );
+  lines.push("");
+
+  const byEntry = new Map<
+    string,
+    { lenses: Map<string, number>; severity: Record<string, number>; count: number }
+  >();
+  for (const insight of insights) {
+    const current = byEntry.get(insight.entry) ?? {
+      lenses: new Map<string, number>(),
+      severity: {},
+      count: 0,
+    };
+    current.count += 1;
+    current.lenses.set(insight.lens, (current.lenses.get(insight.lens) ?? 0) + 1);
+    current.severity[insight.severity] = (current.severity[insight.severity] ?? 0) + 1;
+    byEntry.set(insight.entry, current);
+  }
+
+  const severityTotals = { high: 0, medium: 0, low: 0, info: 0 };
+  for (const insight of insights) {
+    if (insight.severity in severityTotals) {
+      severityTotals[insight.severity as keyof typeof severityTotals] += 1;
+    }
+  }
+
+  const lensEntries = new Map<string, Set<string>>();
+  for (const insight of insights) {
+    const entries = lensEntries.get(insight.lens) ?? new Set<string>();
+    entries.add(insight.entry);
+    lensEntries.set(insight.lens, entries);
+  }
+
+  lines.push(`- total findings: ${insights.length}`);
+  lines.push(`- entries analyzed: ${byEntry.size}`);
+  lines.push(`- lenses active: ${lensEntries.size}`);
+  lines.push(
+    `- severity: high=${severityTotals.high}, medium=${severityTotals.medium}, low=${severityTotals.low}, info=${severityTotals.info}`,
+  );
+  lines.push("");
+
+  if (insights.length === 0) {
+    lines.push("No insight data available.");
+    lines.push("");
+    lines.push(
+      "(Run `prism knowledge build` to generate insights, then regenerate this report.)",
+    );
+    return lines.join("\n") + "\n";
+  }
+
+  lines.push("## Entry Hotspots");
+  lines.push("");
+  lines.push(
+    `Top ${Math.min(byEntry.size, TOP_HOTSPOTS)} entries by severity-weighted score.`,
+  );
+  lines.push("");
+  lines.push(
+    "| # | entry | findings | score | high | med | low | info | lens spread | top lenses |",
+  );
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+
+  const hotspots = [...byEntry.entries()]
+    .map(([entry, data]) => {
+      const h = data.severity["high"] ?? 0;
+      const m = data.severity["medium"] ?? 0;
+      const l = data.severity["low"] ?? 0;
+      const inf = data.severity["info"] ?? 0;
+      const score =
+        h * CROSS_SLICE_SEVERITY_WEIGHT["high"]! +
+        m * CROSS_SLICE_SEVERITY_WEIGHT["medium"]! +
+        l * CROSS_SLICE_SEVERITY_WEIGHT["low"]! +
+        inf * CROSS_SLICE_SEVERITY_WEIGHT["info"]!;
+      const topLenses = [...data.lenses.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 5)
+        .map(([lens]) => lens);
+      return {
+        entry,
+        count: data.count,
+        score,
+        h,
+        m,
+        l,
+        inf,
+        spread: data.lenses.size,
+        topLenses,
+      };
+    })
+    .sort(
+      (a, b) => b.score - a.score || b.count - a.count || a.entry.localeCompare(b.entry),
+    );
+
+  hotspots.slice(0, TOP_HOTSPOTS).forEach((row, index) => {
+    lines.push(
+      `| ${index + 1} | \`${row.entry}\` | ${row.count} | ${row.score} | ${row.h} | ${row.m} | ${row.l} | ${row.inf} | ${row.spread} | ${row.topLenses.join(", ")} |`,
+    );
+  });
+  if (byEntry.size > TOP_HOTSPOTS) {
+    lines.push("");
+    lines.push(
+      `Showing first ${TOP_HOTSPOTS} of ${byEntry.size} entries. See \`data/cross-slice.json\` for full list.`,
+    );
+  }
+  lines.push("");
+
+  lines.push("## Lens Co-Occurrence");
+  lines.push("");
+  lines.push(
+    "Lens pairs firing on 2+ shared entries. Signals correlated code quality issues.",
+  );
+  lines.push("");
+
+  const lensIds = [...lensEntries.keys()].sort();
+  const coOccurrence: Array<{
+    lensA: string;
+    lensB: string;
+    sharedCount: number;
+    entries: string[];
+  }> = [];
+  for (let i = 0; i < lensIds.length; i++) {
+    for (let j = i + 1; j < lensIds.length; j++) {
+      const a = lensEntries.get(lensIds[i]!)!;
+      const b = lensEntries.get(lensIds[j]!)!;
+      const shared = [...a].filter((e) => b.has(e)).sort();
+      if (shared.length >= 2) {
+        coOccurrence.push({
+          lensA: lensIds[i]!,
+          lensB: lensIds[j]!,
+          sharedCount: shared.length,
+          entries: shared.slice(0, 10),
+        });
+      }
+    }
+  }
+  coOccurrence.sort(
+    (a, b) =>
+      b.sharedCount - a.sharedCount ||
+      a.lensA.localeCompare(b.lensA) ||
+      a.lensB.localeCompare(b.lensB),
+  );
+
+  if (coOccurrence.length === 0) {
+    lines.push("No lens pairs share 2+ entries.");
+  } else {
+    lines.push("| lens A | lens B | shared entries | entry list |");
+    lines.push("| --- | --- | --- | --- |");
+    coOccurrence.slice(0, TOP_CO_OCCURRENCE).forEach((row) => {
+      lines.push(
+        `| ${row.lensA} | ${row.lensB} | ${row.sharedCount} | ${row.entries.map((e) => `\`${e}\``).join(", ")} |`,
+      );
+    });
+    if (coOccurrence.length > TOP_CO_OCCURRENCE) {
+      lines.push("");
+      lines.push(
+        `Showing first ${TOP_CO_OCCURRENCE} of ${coOccurrence.length} pairs. See \`data/cross-slice.json\`.`,
+      );
+    }
+  }
+  lines.push("");
+
+  lines.push("## How to Read This Page");
+  lines.push("");
+  lines.push(
+    "- **Hotspots**: entries with high severity scores are candidates for focused refactoring",
+  );
+  lines.push(
+    "- **Co-occurrence**: lens pairs firing together suggest structural patterns (e.g., bloater + complexity often co-occur in god objects)",
+  );
+  lines.push("- Full data: see `data/cross-slice.json`");
+  lines.push("");
+
   return lines.join("\n");
 }

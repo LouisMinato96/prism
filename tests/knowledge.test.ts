@@ -2516,7 +2516,7 @@ test("knowledge answer-report emits manifest and placeholder index", async () =>
     expect(result.manifest.counts.inputs).toBe(6);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
     expect(result.manifest.sources).toEqual([...result.manifest.sources].sort());
-    expect(result.manifest.pages.length).toBe(31);
+    expect(result.manifest.pages.length).toBe(32);
 
     const manifestOnDisk = JSON.parse(await readFile(result.manifestPath, "utf8"));
     expect(manifestOnDisk.digest).toBe(result.manifest.digest);
@@ -2652,7 +2652,7 @@ test("knowledge answer-report emits pages, per-question files, data, and validat
     expect(result.manifest.counts.answerJsonSidecars).toBe(2);
     expect(result.manifest.counts.markdownSidecars).toBe(2);
     expect(result.manifest.counts.questionsWithoutJson).toBe(0);
-    expect(result.manifest.pages.length).toBe(31);
+    expect(result.manifest.pages.length).toBe(32);
 
     for (const page of [
       "00-overview.md",
@@ -2882,7 +2882,7 @@ test("knowledge answer-report emits teaching pages and glossary", async () => {
       force: true,
     });
 
-    expect(result.manifest.pages.length).toBe(31);
+    expect(result.manifest.pages.length).toBe(32);
 
     for (const page of [
       "10-react-standards.md",
@@ -3181,7 +3181,7 @@ test("knowledge answer-report e2e smoke: build → answer → report → verify"
     expect(result.manifest.schemaVersion).toBe(1);
     expect(result.manifest.counts.questions).toBe(2);
     expect(result.manifest.strict).toBe(true);
-    expect(result.manifest.pages.length).toBe(31);
+    expect(result.manifest.pages.length).toBe(32);
 
     const index = await readFile(result.indexPath, "utf8");
     expect(index).toContain("strict mode: enabled");
@@ -3194,6 +3194,7 @@ test("knowledge answer-report e2e smoke: build → answer → report → verify"
       "lens-findings.json",
       "cross-question.json",
       "evidence-saturation.json",
+      "cross-slice.json",
     ]) {
       expect(existsSync(join(reportOut, "data", dataFile))).toBe(true);
     }
@@ -3528,7 +3529,7 @@ test("knowledge answer-report cross-question pages render with 2+ questions (v2.
     });
 
     expect(result.manifest.counts.questions).toBe(2);
-    expect(result.manifest.pages.length).toBe(31);
+    expect(result.manifest.pages.length).toBe(32);
 
     for (const page of [
       "07-question-overlap.md",
@@ -3612,6 +3613,64 @@ test("knowledge answer-report evidence-saturation.json has expected structure (v
     expect(typeof saturation.questions[0].digest).toBe("string");
     expect(typeof saturation.questions[0].entryCount).toBe("number");
     expect(typeof saturation.questions[0].scoreAtRank1).toBe("number");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge answer-report cross-slice.json has expected structure (v2.26)", async () => {
+  const baseDir = await createKnowledgeFixtureProject();
+  try {
+    await runKnowledgeBuild({
+      baseDir,
+      analyzeRoot: ".tmp/analyze",
+      docsRoot: "docs/prism",
+      outRoot: ".prism/knowledge",
+      force: true,
+    });
+    await runKnowledgeAnswer({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      question: "How app page works",
+      outDir: ".prism/knowledge/answers",
+      top: 5,
+      emitJson: true,
+      force: true,
+    });
+
+    const reportOut = join(baseDir, ".prism/knowledge/answer-reports/cross-slice");
+    await runKnowledgeAnswerReport({
+      baseDir,
+      knowledgeRoot: ".prism/knowledge",
+      answersDir: ".prism/knowledge/answers",
+      reportOut,
+      strict: false,
+      force: true,
+    });
+
+    const crossSlice = JSON.parse(
+      await readFile(join(reportOut, "data/cross-slice.json"), "utf8"),
+    );
+    expect(crossSlice.schemaVersion).toBe(1);
+    expect(typeof crossSlice.entryCount).toBe("number");
+    expect(typeof crossSlice.lensCount).toBe("number");
+    expect(typeof crossSlice.totalFindings).toBe("number");
+    expect(crossSlice.severityTotals).toBeDefined();
+    expect(typeof crossSlice.severityTotals.high).toBe("number");
+    expect(typeof crossSlice.severityTotals.medium).toBe("number");
+    expect(typeof crossSlice.severityTotals.low).toBe("number");
+    expect(typeof crossSlice.severityTotals.info).toBe("number");
+    expect(Array.isArray(crossSlice.hotspots)).toBe(true);
+    expect(Array.isArray(crossSlice.coOccurrence)).toBe(true);
+
+    const crossSlicePage = await readFile(
+      join(reportOut, "pages/30-cross-slice.md"),
+      "utf8",
+    );
+    expect(crossSlicePage).toContain("# 30 Cross-Slice Analysis");
+    expect(crossSlicePage).toContain("## Entry Hotspots");
+    expect(crossSlicePage).toContain("## Lens Co-Occurrence");
+    expect(crossSlicePage).toContain("## How to Read This Page");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

@@ -27,6 +27,7 @@ import {
 import {
   renderClassBreakdown,
   renderCoverageGaps,
+  renderCrossSlice,
   renderDiagramIndex,
   renderEvidenceMap,
   renderFollowUp,
@@ -255,6 +256,15 @@ export async function runKnowledgeAnswerReport(
     knowledgePackPath,
     questions: sidecars.questions,
   });
+
+  pageDescriptors.push({
+    name: "cross-slice",
+    file: "30-cross-slice.md",
+    title: "30 Cross-Slice Analysis",
+    summary: "repo-wide entry hotspots, lens co-occurrence, severity totals",
+    content: renderCrossSlice(teachingInput.insights),
+  });
+
   const teachingPages = renderTeachingPages(teachingInput);
   for (const page of teachingPages) {
     pageDescriptors.push({

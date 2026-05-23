@@ -9,7 +9,9 @@ It has three primary capabilities:
 | Pull request review | `prism review <pr-number>` | Review every AST-derived reviewable unit in a GitHub PR, enforce coverage, and optionally post the result back to GitHub. | Claude is used for classification, review, aggregate reporting, and PR architecture narrative. Coverage is computed by code. |
 | Static analysis | `prism analyze ...` | Analyze one entrypoint or a bounded set of entrypoints in a repo and produce deterministic architecture maps, symbol/module directories, diagrams, insights, and reports. | No LLM. All facts come from source, AST extraction, import traversal, and deterministic graph logic. |
 | Repo knowledge | `prism knowledge build` + `prism knowledge answer` + `prism knowledge update` | Package existing `prism analyze` artifacts into compact deterministic knowledge outputs, write grounded answer files, and apply deterministic incremental refresh from git commit ranges. | No LLM. Facts are loaded from existing Prism artifacts and validated on disk. |
-| Answer report | `prism knowledge answer-report` | Aggregate answer sidecars into a navigable, teachable multi-file report with strict gates, teaching pages (React/TS standards, security, performance, bloaters, complexity, coupling, tech debt), glossary, diagram index, and evidence maps. | No LLM. All content is deterministic rendering from existing answer + analyze artifacts. |
+| Answer report | `prism knowledge answer-report` | Aggregate answer sidecars into a navigable, teachable multi-file report with strict gates, 20 teaching pages (React/TS standards, security, performance, bloaters, complexity, coupling, tech debt, console/imports/promises, magic numbers, nesting, catch blocks, file size, switch completeness), glossary, diagram index, and evidence maps. | No LLM. All content is deterministic rendering from existing answer + analyze artifacts. |
+| Diff | `prism knowledge diff` | Compare two answer-report snapshots to detect regressions, improvements, and changes in strict issues, lens findings, and confidence levels. | No LLM. Deterministic comparison of report manifests and data files. |
+| Diff history | `prism knowledge diff-history` | Track diff verdicts over time for CI trend charts. Append snapshots to a history file or display trend tables. | No LLM. Deterministic append and formatting. |
 
 The core promise is the same in both modes: disk-backed stages, deterministic inputs and outputs, bounded work, inspectable failures, and safe reruns.
 
@@ -63,6 +65,8 @@ flowchart TD
   Knowledge --> KPack["build knowledge pack + index"]
   Knowledge --> KValidate["validate links and refs"]
   Knowledge --> KReport["answer-report (teaching pages, strict, diagrams)"]
+  Knowledge --> KDiff["diff (compare two reports)"]
+  Knowledge --> KDiffHist["diff-history (trend tracking)"]
 ```
 
 ## PR Review
@@ -575,6 +579,18 @@ Output structure:
 │   ├── 15-complexity-hotspots.md
 │   ├── 16-coupling-cohesion.md
 │   ├── 17-todo-debt.md
+│   ├── 18-console-log.md
+│   ├── 19-unused-imports.md
+│   ├── 20-promise-error-handling.md
+│   ├── 21-magic-numbers.md
+│   ├── 22-no-floating-promises.md
+│   ├── 23-duplicate-string-literals.md
+│   ├── 24-excessive-nesting.md
+│   ├── 25-implicit-any-return.md
+│   ├── 26-empty-catch.md
+│   ├── 27-long-parameter-list.md
+│   ├── 28-large-file.md
+│   ├── 29-switch-without-default.md
 │   └── 99-glossary.md
 ├── questions/
 │   └── <digest>.md
@@ -584,12 +600,89 @@ Output structure:
     └── strict-rollup.json
 ```
 
-Start reading from `index.md`. Teaching pages (10–17) surface opinionated, codebase-grounded insights on React/TS standards, security, performance, bloaters, complexity hotspots, coupling/cohesion, and tech debt markers. The glossary (99) documents all 13 deterministic insight lenses.
+Start reading from `index.md`. Teaching pages (10–29) surface opinionated, codebase-grounded insights on React/TS standards, security, performance, bloaters, complexity hotspots, coupling/cohesion, tech debt markers, console/debugger usage, unused imports, promise error handling, magic numbers, floating promises, duplicate strings, excessive nesting, implicit return types, empty catch blocks, long parameter lists, large files, and switch completeness. The glossary (99) documents all 25 deterministic insight lenses.
 
 Answer-report schema contract:
 
 - See [`docs/knowledge-answer-report-schema.md`](docs/knowledge-answer-report-schema.md).
-- See [`docs/analyze-lenses.md`](docs/analyze-lenses.md) for the full lens catalog.
+- See [`docs/analyze-lenses.md`](docs/analyze-lenses.md) for the full lens catalog (25 integrated + future candidates).
+
+### Diff
+
+`prism knowledge diff` compares two answer-report snapshots and produces a verdict with scored deltas.
+
+```bash
+# Markdown output (default)
+prism knowledge diff \
+  --base .prism/knowledge/answer-reports/baseline \
+  --head .prism/knowledge/answer-reports/latest
+
+# Machine-readable JSON
+prism knowledge diff \
+  --base .prism/knowledge/answer-reports/baseline \
+  --head .prism/knowledge/answer-reports/latest \
+  --json
+
+# Strict mode (exits non-zero on regression)
+prism knowledge diff \
+  --base .prism/knowledge/answer-reports/baseline \
+  --head .prism/knowledge/answer-reports/latest \
+  --strict
+```
+
+Diff scoring weights:
+
+| Signal | Weight |
+| --- | --- |
+| New strict issue | -10 |
+| Resolved strict issue | +5 |
+| Confidence regression | -3 |
+| Confidence improvement | +2 |
+| New lens finding | -1 |
+| Resolved lens finding | +1 |
+
+Verdict is `improved` (score > 0), `regressed` (score < 0), or `unchanged` (score = 0).
+
+### Diff History
+
+`prism knowledge diff-history` tracks diff verdicts over time for CI trend charts.
+
+```bash
+# Append mode: run diff and append snapshot to history file
+prism knowledge diff-history \
+  --base .prism/knowledge/answer-reports/baseline \
+  --head .prism/knowledge/answer-reports/latest \
+  --history .prism/knowledge/diff-history.json
+
+# Read-only mode: display trend table from existing history
+prism knowledge diff-history \
+  --history .prism/knowledge/diff-history.json
+
+# JSON output
+prism knowledge diff-history \
+  --history .prism/knowledge/diff-history.json \
+  --json
+```
+
+History file schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "timestamp": "2026-05-23T10:00:00Z",
+      "baseDigest": "abc123...",
+      "headDigest": "def456...",
+      "verdict": "improved",
+      "score": 7,
+      "questionCount": { "base": 10, "head": 12 },
+      "strictIssuesDelta": { "new": 0, "resolved": 2 },
+      "lensFindingsDelta": { "new": 1, "resolved": 3 },
+      "confidenceDelta": { "improved": 3, "regressed": 0 }
+    }
+  ]
+}
 
 ## CLI Options
 
@@ -601,6 +694,8 @@ prism knowledge answer --question <text> [options]
 prism knowledge answer --questions-file <path> [options]
 prism knowledge update --from <commit> --to <commit> [options]
 prism knowledge answer-report [options]
+prism knowledge diff --base <path> --head <path> [options]
+prism knowledge diff-history --history <path> [options]
 
 Options:
   --force              Force re-run of all stages
@@ -635,6 +730,10 @@ Options:
   --min-confidence <low|medium|high> Knowledge answer/answer-report strict mode: minimum confidence gate
   --answers-dir <path>  Knowledge answer-report command: answers output directory to aggregate
   --report-out <path>   Knowledge answer-report command: report output directory
+  --base <path>         Knowledge diff/diff-history command: base report directory
+  --head <path>         Knowledge diff/diff-history command: head report directory
+  --history <path>      Knowledge diff-history command: history file path
+  --json                Knowledge diff/diff-history command: emit machine-readable JSON
 ```
 
 ## Environment
@@ -665,14 +764,12 @@ bun test
 
 ## Documentation
 
-- [`docs/analyze-v0.md`](docs/analyze-v0.md): single-entry static analysis contract.
-- [`docs/analyze-v1.md`](docs/analyze-v1.md): multi-entry orchestration contract.
-- [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): current static-analysis roadmap/status.
-- [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
+- [`docs/analyze-lenses.md`](docs/analyze-lenses.md): full catalog of 25 deterministic insight lenses with detection rules, severity, metrics, and future lens candidates.
+- [`docs/knowledge-answer-report-schema.md`](docs/knowledge-answer-report-schema.md): answer-report manifest, pages, data schemas, strict gates, and determinism rules.
 - [`docs/knowledge-answer-schema.md`](docs/knowledge-answer-schema.md): deterministic answer JSON contract and strict diagnostics format.
 - [`docs/knowledge-update-schema.md`](docs/knowledge-update-schema.md): deterministic update report and state schema contract.
-- [`docs/knowledge-answer-report-schema.md`](docs/knowledge-answer-report-schema.md): answer-report manifest, pages, data schemas, strict gates, and determinism rules.
-- [`docs/analyze-lenses.md`](docs/analyze-lenses.md): full catalog of 13 deterministic insight lenses with detection rules, severity, metrics.
-- [`docs/knowledge-v2-prep.md`](docs/knowledge-v2-prep.md): V2 implementation-ready hardening plan.
-- [`docs/knowledge-v3-prep.md`](docs/knowledge-v3-prep.md): V3 implementation-ready incremental-update plan.
+- [`docs/analyze-v0.md`](docs/analyze-v0.md): single-entry static analysis contract.
+- [`docs/analyze-v1.md`](docs/analyze-v1.md): multi-entry orchestration contract.
+- [`docs/analyze-roadmap.md`](docs/analyze-roadmap.md): static-analysis version status and roadmap.
+- [`docs/knowledge-v0.md`](docs/knowledge-v0.md): repo knowledge packaging contract.
 - [`docs/model-usage.md`](docs/model-usage.md): model-selection guidance for development work.

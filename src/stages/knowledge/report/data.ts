@@ -18,6 +18,7 @@ export async function writeDataFiles(input: {
   lensFindingsPath: string;
   crossQuestionPath: string;
   evidenceSaturationPath: string;
+  crossSlicePath: string;
 }> {
   const questionsPath = join(input.dataDirAbs, "questions.json");
   const entriesRollupPath = join(input.dataDirAbs, "entries-rollup.json");
@@ -25,6 +26,7 @@ export async function writeDataFiles(input: {
   const lensFindingsPath = join(input.dataDirAbs, "lens-findings.json");
   const crossQuestionPath = join(input.dataDirAbs, "cross-question.json");
   const evidenceSaturationPath = join(input.dataDirAbs, "evidence-saturation.json");
+  const crossSlicePath = join(input.dataDirAbs, "cross-slice.json");
 
   await writeJsonIfChanged(
     questionsPath,
@@ -96,6 +98,9 @@ export async function writeDataFiles(input: {
   const evidenceSaturation = buildEvidenceSaturation(input.questions);
   await writeJsonIfChanged(evidenceSaturationPath, evidenceSaturation, input.force);
 
+  const crossSlice = buildCrossSliceData(input.insights);
+  await writeJsonIfChanged(crossSlicePath, crossSlice, input.force);
+
   return {
     questionsPath,
     entriesRollupPath,
@@ -103,6 +108,7 @@ export async function writeDataFiles(input: {
     lensFindingsPath,
     crossQuestionPath,
     evidenceSaturationPath,
+    crossSlicePath,
   };
 }
 
@@ -329,5 +335,111 @@ function buildEvidenceSaturation(questions: NormalizedQuestion[]) {
       concentratedQuestions: concentrated.length,
     },
     questions: perQuestion,
+  };
+}
+
+const SEVERITY_WEIGHT: Record<string, number> = { high: 4, medium: 3, low: 2, info: 1 };
+
+export function buildCrossSliceData(insights: KnowledgeInsightSummary[]) {
+  const byEntry = new Map<
+    string,
+    { lenses: Map<string, number>; severity: Record<string, number>; count: number }
+  >();
+  for (const insight of insights) {
+    const current = byEntry.get(insight.entry) ?? {
+      lenses: new Map<string, number>(),
+      severity: {},
+      count: 0,
+    };
+    current.count += 1;
+    current.lenses.set(insight.lens, (current.lenses.get(insight.lens) ?? 0) + 1);
+    current.severity[insight.severity] = (current.severity[insight.severity] ?? 0) + 1;
+    byEntry.set(insight.entry, current);
+  }
+
+  const hotspots = [...byEntry.entries()]
+    .map(([entry, data]) => {
+      const highCount = data.severity["high"] ?? 0;
+      const mediumCount = data.severity["medium"] ?? 0;
+      const lowCount = data.severity["low"] ?? 0;
+      const infoCount = data.severity["info"] ?? 0;
+      const severityScore =
+        highCount * SEVERITY_WEIGHT["high"]! +
+        mediumCount * SEVERITY_WEIGHT["medium"]! +
+        lowCount * SEVERITY_WEIGHT["low"]! +
+        infoCount * SEVERITY_WEIGHT["info"]!;
+      const topLenses = [...data.lenses.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 5)
+        .map(([lens]) => lens);
+      return {
+        entry,
+        findingCount: data.count,
+        severityScore,
+        highCount,
+        mediumCount,
+        lowCount,
+        infoCount,
+        lensSpread: data.lenses.size,
+        topLenses,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.severityScore - a.severityScore ||
+        b.findingCount - a.findingCount ||
+        a.entry.localeCompare(b.entry),
+    );
+
+  const lensEntries = new Map<string, Set<string>>();
+  for (const insight of insights) {
+    const entries = lensEntries.get(insight.lens) ?? new Set<string>();
+    entries.add(insight.entry);
+    lensEntries.set(insight.lens, entries);
+  }
+  const lensIds = [...lensEntries.keys()].sort();
+  const coOccurrence: Array<{
+    lensA: string;
+    lensB: string;
+    sharedEntryCount: number;
+    entries: string[];
+  }> = [];
+  for (let i = 0; i < lensIds.length; i++) {
+    for (let j = i + 1; j < lensIds.length; j++) {
+      const a = lensEntries.get(lensIds[i]!)!;
+      const b = lensEntries.get(lensIds[j]!)!;
+      const shared = [...a].filter((e) => b.has(e)).sort();
+      if (shared.length >= 2) {
+        coOccurrence.push({
+          lensA: lensIds[i]!,
+          lensB: lensIds[j]!,
+          sharedEntryCount: shared.length,
+          entries: shared.slice(0, 10),
+        });
+      }
+    }
+  }
+  coOccurrence.sort(
+    (a, b) =>
+      b.sharedEntryCount - a.sharedEntryCount ||
+      a.lensA.localeCompare(b.lensA) ||
+      a.lensB.localeCompare(b.lensB),
+  );
+
+  const severityTotals = { high: 0, medium: 0, low: 0, info: 0 };
+  for (const insight of insights) {
+    if (insight.severity in severityTotals) {
+      severityTotals[insight.severity as keyof typeof severityTotals] += 1;
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    entryCount: byEntry.size,
+    lensCount: lensEntries.size,
+    totalFindings: insights.length,
+    severityTotals,
+    hotspots,
+    coOccurrence,
   };
 }

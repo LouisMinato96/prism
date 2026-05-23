@@ -12,6 +12,11 @@ The new command does NOT just navigate existing artifacts. It **teaches** the re
 - **v2.10 analyze lens expansion (8 new lenses):** done
 - **v2.11 answer-report teaching pages:** done
 - **v2.12 hardening + docs gate:** done
+- **v2.13–v2.16 answer-report expansion (8 more lenses, 12 teaching pages):** done
+- **v2.17–v2.20 schema guard, evidence saturation, diff CLI:** done
+- **v2.21–v2.22 empty-catch, long-parameter-list, large-file, switch-without-default lenses:** done
+- **v2.23–v2.24 graph migration (5 legacy detectors → lens framework, 0 legacy):** done
+- **v2.25 diff-history CLI:** done
 
 ## Files
 

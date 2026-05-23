@@ -1,6 +1,6 @@
 # Knowledge Answer Report Schema
 
-Schema contract for `prism knowledge answer-report`. Version: v2.12.
+Schema contract for `prism knowledge answer-report`. Version: v2.26.
 
 ## Overview
 
@@ -40,13 +40,27 @@ Schema contract for `prism knowledge answer-report`. Version: v2.12.
 │   ├── 15-complexity-hotspots.md # cyclomatic/cognitive complexity
 │   ├── 16-coupling-cohesion.md  # cycles, hubs, layer leaks, dead exports
 │   ├── 17-todo-debt.md          # TODO/FIXME/HACK/XXX density
-│   └── 99-glossary.md           # all 13 lens definitions
+│   ├── 18-console-log.md        # console.log/warn/error/debug + debugger
+│   ├── 19-unused-imports.md     # unreferenced import identifiers
+│   ├── 20-promise-error-handling.md # .then() without .catch()
+│   ├── 21-magic-numbers.md      # numeric literals without named constants
+│   ├── 22-no-floating-promises.md # unhandled async calls
+│   ├── 23-duplicate-string-literals.md # strings appearing 3+ times
+│   ├── 24-excessive-nesting.md  # control flow nested beyond 4 levels
+│   ├── 25-implicit-any-return.md # functions without return type annotations
+│   ├── 26-empty-catch.md        # empty or comment-only catch blocks
+│   ├── 27-long-parameter-list.md # functions with 5+ parameters
+│   ├── 28-large-file.md         # files exceeding line/declaration thresholds
+│   ├── 29-switch-without-default.md # switch missing default case
+│   ├── 30-cross-slice.md        # repo-wide entry hotspots, lens co-occurrence
+│   └── 99-glossary.md           # all 25 lens definitions
 ├── questions/
 │   └── <digest>.md        # per-question detail page
 └── data/
     ├── questions.json         # normalized question list
     ├── entries-rollup.json    # entry path rollup by score
-    └── strict-rollup.json     # strict issues + summary
+    ├── strict-rollup.json     # strict issues + summary
+    └── cross-slice.json       # repo-wide hotspots + lens co-occurrence
 ```
 
 ## Manifest Schema (`manifest.json`)
@@ -182,6 +196,35 @@ interface StrictIssue {
 }
 ```
 
+### `data/cross-slice.json`
+
+```typescript
+{
+  schemaVersion: 1;
+  entryCount: number;
+  lensCount: number;
+  totalFindings: number;
+  severityTotals: { high: number; medium: number; low: number; info: number };
+  hotspots: Array<{
+    entry: string;
+    findingCount: number;
+    severityScore: number;
+    highCount: number;
+    mediumCount: number;
+    lowCount: number;
+    infoCount: number;
+    lensSpread: number;
+    topLenses: string[];
+  }>;
+  coOccurrence: Array<{
+    lensA: string;
+    lensB: string;
+    sharedEntryCount: number;
+    entries: string[];
+  }>;
+}
+```
+
 ## Determinism Rules
 
 1. **Content-based digest**: report folder name is `SHA-1(12)` of concatenated `path|fileContent` for all inputs. Same content always produces same folder.
@@ -190,7 +233,7 @@ interface StrictIssue {
 4. **No LLM**: all rendering is string concatenation from loaded data. No model calls during report generation.
 5. **Graceful degradation**: missing `.json` sidecars produce warnings but do not block report generation. Evidence map and entry rollup are empty without them.
 
-## Teaching Pages (10-17)
+## Teaching Pages (10-29)
 
 Each teaching page follows a fixed structure:
 
@@ -204,9 +247,9 @@ When `.json` sidecars are present, findings are filtered to entries referenced b
 
 ## Glossary (99)
 
-Documents all 13 deterministic insight lenses:
+Documents all 25 deterministic insight lenses:
 
-- 5 legacy graph lenses: `layering`, `react`, `coupling`, `diagrams`, `dead-code`
-- 8 AST lenses: `hook-deps-mismatch`, `complexity-hotspot`, `type-safety-escape`, `bloater`, `await-in-loop`, `security-quick-win`, `todo-density`
+- 20 AST lenses: `hook-deps-mismatch`, `complexity-hotspot`, `type-safety-escape`, `bloater`, `dead-code`, `await-in-loop`, `security-quick-win`, `todo-density`, `console-log`, `unused-imports`, `promise-error-handling`, `magic-number`, `no-floating-promises`, `duplicate-string-literal`, `excessive-nesting`, `implicit-any-return`, `empty-catch`, `long-parameter-list`, `large-file`, `switch-without-default`
+- 5 graph lenses: `layering`, `react`, `diagrams`, `coupling-cycle`, `coupling-hub`
 
 Each entry includes: description, severity ladder, typical metric, canonical reference URL.
