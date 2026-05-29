@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { z } from "zod";
 import { Workdir } from "./lib/workdir.ts";
 import { log } from "./lib/log.ts";
 import { config } from "./config.ts";
@@ -37,6 +38,52 @@ import {
 } from "./stages/knowledge/diff-history.ts";
 import type { FileUnits } from "./schemas/index.ts";
 import type { PrMeta } from "./lib/gh.ts";
+
+/**
+ * Schema mirroring the parseArgs options config.
+ * Used only for type inference (z.infer) — never called with .parse() at runtime.
+ */
+const CliValuesSchema = z.object({
+  force: z.boolean().default(false),
+  "force-stage": z.string().optional(),
+  post: z.boolean().default(false),
+  edit: z.boolean().default(false),
+  resume: z.boolean().default(false),
+  entry: z.string().optional(),
+  config: z.string().optional(),
+  depth: z.string().optional(),
+  "max-files": z.string().optional(),
+  include: z.string().optional(),
+  exclude: z.string().optional(),
+  "analyze-root": z.string().optional(),
+  "docs-root": z.string().optional(),
+  "knowledge-root": z.string().optional(),
+  "repo-root": z.string().optional(),
+  "code-root": z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  "batch-size": z.string().optional(),
+  "dry-run": z.boolean().optional(),
+  apply: z.boolean().default(false),
+  question: z.string().optional(),
+  "questions-file": z.string().optional(),
+  "answer-out": z.string().optional(),
+  "out-dir": z.string().optional(),
+  top: z.string().optional(),
+  "emit-json": z.boolean().default(false),
+  strict: z.boolean().default(false),
+  "min-confidence": z.string().optional(),
+  "answers-dir": z.string().optional(),
+  "report-out": z.string().optional(),
+  base: z.string().optional(),
+  head: z.string().optional(),
+  history: z.string().optional(),
+  json: z.boolean().default(false),
+  out: z.string().optional(),
+  help: z.boolean().default(false),
+});
+
+type CliValues = z.infer<typeof CliValuesSchema>;
 
 function usage(): never {
   console.log(`prism — deterministic LLM-orchestrated PR review harness
@@ -99,420 +146,401 @@ ENV VARS:
   process.exit(1);
 }
 
-async function main() {
-  const { values, positionals } = parseArgs({
-    args: Bun.argv.slice(2),
-    options: {
-      force: { type: "boolean", default: false },
-      "force-stage": { type: "string" },
-      post: { type: "boolean", default: false },
-      edit: { type: "boolean", default: false },
-      resume: { type: "boolean", default: false },
-      entry: { type: "string" },
-      config: { type: "string" },
-      depth: { type: "string" },
-      "max-files": { type: "string" },
-      include: { type: "string" },
-      exclude: { type: "string" },
-      "analyze-root": { type: "string" },
-      "docs-root": { type: "string" },
-      "knowledge-root": { type: "string" },
-      "repo-root": { type: "string" },
-      "code-root": { type: "string" },
-      from: { type: "string" },
-      to: { type: "string" },
-      "batch-size": { type: "string" },
-      "dry-run": { type: "boolean" },
-      apply: { type: "boolean", default: false },
-      question: { type: "string" },
-      "questions-file": { type: "string" },
-      "answer-out": { type: "string" },
-      "out-dir": { type: "string" },
-      top: { type: "string" },
-      "emit-json": { type: "boolean", default: false },
-      strict: { type: "boolean", default: false },
-      "min-confidence": { type: "string" },
-      "answers-dir": { type: "string" },
-      "report-out": { type: "string" },
-      base: { type: "string" },
-      head: { type: "string" },
-      history: { type: "string" },
-      json: { type: "boolean", default: false },
-      out: { type: "string" },
-      help: { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-    strict: false,
+// ---------------------------------------------------------------------------
+// Knowledge subcommand handlers
+// ---------------------------------------------------------------------------
+
+async function handleKnowledgeBuild(values: CliValues, force: boolean): Promise<void> {
+  const knowledge = resolveKnowledgeBuildOptions({
+    "analyze-root": values["analyze-root"],
+    "docs-root": values["docs-root"],
+    out: values.out,
   });
+  const result = await runKnowledgeBuild({
+    analyzeRoot: knowledge.analyzeRoot,
+    docsRoot: knowledge.docsRoot,
+    outRoot: knowledge.outRoot,
+    force,
+  });
+  log.done(result.knowledgePackPath, "knowledge-pack");
+  log.done(result.artifactsIndexPath, "artifacts-index");
+  log.done(result.validationReportPath, "validation");
+}
 
-  if (values.help || positionals.length === 0) usage();
-
-  const [cmd, subcmd] = positionals;
-  const force = values.force === true;
-  const forceStage = values["force-stage"] as string | undefined;
-  const isForced = (s: string) => force || forceStage === s;
-
-  if (cmd === "knowledge") {
-    if (subcmd === "build") {
-      const knowledge = resolveKnowledgeBuildOptions({
-        "analyze-root": values["analyze-root"] as string | undefined,
-        "docs-root": values["docs-root"] as string | undefined,
-        out: values.out as string | undefined,
-      });
-      const result = await runKnowledgeBuild({
-        analyzeRoot: knowledge.analyzeRoot,
-        docsRoot: knowledge.docsRoot,
-        outRoot: knowledge.outRoot,
-        force,
-      });
-      log.done(result.knowledgePackPath, "knowledge-pack");
-      log.done(result.artifactsIndexPath, "artifacts-index");
-      log.done(result.validationReportPath, "validation");
-      return;
-    }
-
-    if (subcmd === "answer") {
-      let answerOptions: ReturnType<typeof resolveKnowledgeAnswerOptions>;
-      try {
-        answerOptions = resolveKnowledgeAnswerOptions({
-          "knowledge-root": values["knowledge-root"] as string | undefined,
-          "code-root": values["code-root"] as string | undefined,
-          question: values.question as string | undefined,
-          "questions-file": values["questions-file"] as string | undefined,
-          "answer-out": values["answer-out"] as string | undefined,
-          "out-dir": values["out-dir"] as string | undefined,
-          top: values.top as string | undefined,
-          "emit-json": values["emit-json"] === true,
-          strict: values.strict === true,
-          "min-confidence": values["min-confidence"] as string | undefined,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "knowledge:answer");
-        process.exit(1);
-      }
-
-      const result = await runKnowledgeAnswer({
-        knowledgeRoot: answerOptions.knowledgeRoot,
-        codeRoot: answerOptions.codeRoot,
-        question: answerOptions.question,
-        questionsFile: answerOptions.questionsFile,
-        answerOut: answerOptions.answerOut,
-        outDir: answerOptions.outDir,
-        top: answerOptions.top,
-        emitJson: answerOptions.emitJson,
-        strict: answerOptions.strict,
-        minConfidence: answerOptions.minConfidence,
-        force,
-      });
-      for (const answer of result.answers) {
-        log.done(`${answer.question} -> ${answer.outputPath}`, "answer");
-        if (answer.jsonOutputPath) {
-          log.done(`${answer.question} -> ${answer.jsonOutputPath}`, "answer-json");
-        }
-      }
-      if (result.indexPath) {
-        log.done(result.indexPath, "answers-index");
-      }
-      if (result.strict.failed) {
-        const summary = result.strict.summary;
-        log.error(
-          `strict mode failed with ${result.strict.failures.length} issue(s); minimum confidence: ${result.strict.minConfidence}`,
-          "knowledge:strict",
-        );
-        log.error(
-          `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${result.strict.minConfidence}`,
-          "knowledge:strict",
-        );
-        for (const category of summary.categories) {
-          log.error(
-            `STRICT_CATEGORY category=${category.category} count=${category.count}`,
-            "knowledge:strict",
-          );
-        }
-        for (const issue of result.strict.issues) {
-          log.error(
-            `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
-            "knowledge:strict",
-          );
-        }
-        for (const failure of result.strict.failures) {
-          log.error(failure, "knowledge:strict");
-        }
-        process.exit(1);
-      }
-      return;
-    }
-
-    if (subcmd === "answer-report") {
-      let reportOptions: ReturnType<typeof resolveKnowledgeAnswerReportOptions>;
-      try {
-        reportOptions = resolveKnowledgeAnswerReportOptions({
-          "knowledge-root": values["knowledge-root"] as string | undefined,
-          "answers-dir": values["answers-dir"] as string | undefined,
-          "report-out": values["report-out"] as string | undefined,
-          strict: values.strict === true,
-          "min-confidence": values["min-confidence"] as string | undefined,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "knowledge:answer-report");
-        process.exit(1);
-      }
-
-      const result = await runKnowledgeAnswerReport({
-        knowledgeRoot: reportOptions.knowledgeRoot,
-        answersDir: reportOptions.answersDir,
-        reportOut: reportOptions.reportOut,
-        strict: reportOptions.strict,
-        minConfidence: reportOptions.minConfidence,
-        force,
-      });
-      log.done(result.reportRoot, "answer-report");
-      if (result.strictFailed) {
-        const summary = result.manifest.strictSummary;
-        log.error(
-          `strict mode failed with ${result.strictIssues.length} issue(s); minimum confidence: ${reportOptions.minConfidence ?? "medium"}`,
-          "answer-report:strict",
-        );
-        if (summary) {
-          log.error(
-            `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${reportOptions.minConfidence ?? "medium"}`,
-            "answer-report:strict",
-          );
-          for (const category of summary.categories) {
-            log.error(
-              `STRICT_CATEGORY category=${category.category} count=${category.count}`,
-              "answer-report:strict",
-            );
-          }
-        }
-        for (const issue of result.strictIssues) {
-          log.error(
-            `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
-            "answer-report:strict",
-          );
-        }
-        process.exit(1);
-      }
-      return;
-    }
-
-    if (subcmd === "update") {
-      let updateOptions: ReturnType<typeof resolveKnowledgeUpdateOptions>;
-      try {
-        updateOptions = resolveKnowledgeUpdateOptions({
-          "repo-root": values["repo-root"] as string | undefined,
-          "knowledge-root": values["knowledge-root"] as string | undefined,
-          from: values.from as string | undefined,
-          to: values.to as string | undefined,
-          "batch-size": values["batch-size"] as string | undefined,
-          "dry-run": values["dry-run"] === true,
-          apply: values.apply === true,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "knowledge:update");
-        process.exit(1);
-      }
-
-      const result = await runKnowledgeUpdate({
-        repoRoot: updateOptions.repoRoot,
-        knowledgeRoot: updateOptions.knowledgeRoot,
-        from: updateOptions.from,
-        to: updateOptions.to,
-        batchSize: updateOptions.batchSize,
-        dryRun: updateOptions.dryRun,
-        force,
-      });
-      log.done(result.reportPath, "update-report");
-      log.done(result.reportMarkdownPath, "update-report-md");
-      return;
-    }
-
-    if (subcmd === "diff") {
-      let diffOptions: ReturnType<typeof resolveKnowledgeDiffOptions>;
-      try {
-        diffOptions = resolveKnowledgeDiffOptions({
-          base: values.base as string | undefined,
-          head: values.head as string | undefined,
-          strict: values.strict === true,
-          json: values.json === true,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "knowledge:diff");
-        process.exit(1);
-      }
-
-      const result = await runKnowledgeDiff(diffOptions);
-      if (diffOptions.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(formatDiffMarkdown(result));
-      }
-      log.done(`verdict: ${result.verdict} (score: ${result.score})`, "knowledge:diff");
-      if (diffOptions.strict && result.verdict === "regressed") {
-        log.error("regression detected in strict diff mode", "knowledge:diff");
-        process.exit(1);
-      }
-      return;
-    }
-
-    if (subcmd === "diff-history") {
-      let historyOptions: ReturnType<typeof resolveKnowledgeDiffHistoryOptions>;
-      try {
-        historyOptions = resolveKnowledgeDiffHistoryOptions({
-          base: values.base as string | undefined,
-          head: values.head as string | undefined,
-          history: values.history as string | undefined,
-          json: values.json === true,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "knowledge:diff-history");
-        process.exit(1);
-      }
-
-      if (historyOptions.basePath && historyOptions.headPath) {
-        const history = await runKnowledgeDiffHistory({
-          basePath: historyOptions.basePath,
-          headPath: historyOptions.headPath,
-          historyPath: historyOptions.historyPath,
-        });
-        if (historyOptions.json) {
-          console.log(JSON.stringify(history, null, 2));
-        } else {
-          console.log(formatDiffHistoryMarkdown(history));
-        }
-      } else {
-        const history = await loadDiffHistory(historyOptions.historyPath);
-        if (historyOptions.json) {
-          console.log(JSON.stringify(history, null, 2));
-        } else {
-          console.log(formatDiffHistoryMarkdown(history));
-        }
-      }
-      return;
-    }
-
-    usage();
+async function handleKnowledgeAnswer(values: CliValues, force: boolean): Promise<void> {
+  let answerOptions: ReturnType<typeof resolveKnowledgeAnswerOptions>;
+  try {
+    answerOptions = resolveKnowledgeAnswerOptions({
+      "knowledge-root": values["knowledge-root"],
+      "code-root": values["code-root"],
+      question: values.question,
+      "questions-file": values["questions-file"],
+      "answer-out": values["answer-out"],
+      "out-dir": values["out-dir"],
+      top: values.top,
+      "emit-json": values["emit-json"] === true,
+      strict: values.strict === true,
+      "min-confidence": values["min-confidence"],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message, "knowledge:answer");
+    process.exit(1);
   }
 
-  if (cmd === "analyze") {
-    const configPath = values.config as string | undefined;
-    let analyzeConfig = {};
-    if (configPath) {
-      try {
-        analyzeConfig = await loadAnalyzeConfig(configPath);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.error(message, "analyze");
-        process.exit(1);
+  const result = await runKnowledgeAnswer({
+    knowledgeRoot: answerOptions.knowledgeRoot,
+    codeRoot: answerOptions.codeRoot,
+    question: answerOptions.question,
+    questionsFile: answerOptions.questionsFile,
+    answerOut: answerOptions.answerOut,
+    outDir: answerOptions.outDir,
+    top: answerOptions.top,
+    emitJson: answerOptions.emitJson,
+    strict: answerOptions.strict,
+    minConfidence: answerOptions.minConfidence,
+    force,
+  });
+  for (const answer of result.answers) {
+    log.done(`${answer.question} -> ${answer.outputPath}`, "answer");
+    if (answer.jsonOutputPath) {
+      log.done(`${answer.question} -> ${answer.jsonOutputPath}`, "answer-json");
+    }
+  }
+  if (result.indexPath) {
+    log.done(result.indexPath, "answers-index");
+  }
+  if (result.strict.failed) {
+    const summary = result.strict.summary;
+    log.error(
+      `strict mode failed with ${result.strict.failures.length} issue(s); minimum confidence: ${result.strict.minConfidence}`,
+      "knowledge:strict",
+    );
+    log.error(
+      `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${result.strict.minConfidence}`,
+      "knowledge:strict",
+    );
+    for (const category of summary.categories) {
+      log.error(
+        `STRICT_CATEGORY category=${category.category} count=${category.count}`,
+        "knowledge:strict",
+      );
+    }
+    for (const issue of result.strict.issues) {
+      log.error(
+        `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
+        "knowledge:strict",
+      );
+    }
+    for (const failure of result.strict.failures) {
+      log.error(failure, "knowledge:strict");
+    }
+    process.exit(1);
+  }
+}
+
+async function handleKnowledgeAnswerReport(values: CliValues, force: boolean): Promise<void> {
+  let reportOptions: ReturnType<typeof resolveKnowledgeAnswerReportOptions>;
+  try {
+    reportOptions = resolveKnowledgeAnswerReportOptions({
+      "knowledge-root": values["knowledge-root"],
+      "answers-dir": values["answers-dir"],
+      "report-out": values["report-out"],
+      strict: values.strict === true,
+      "min-confidence": values["min-confidence"],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message, "knowledge:answer-report");
+    process.exit(1);
+  }
+
+  const result = await runKnowledgeAnswerReport({
+    knowledgeRoot: reportOptions.knowledgeRoot,
+    answersDir: reportOptions.answersDir,
+    reportOut: reportOptions.reportOut,
+    strict: reportOptions.strict,
+    minConfidence: reportOptions.minConfidence,
+    force,
+  });
+  log.done(result.reportRoot, "answer-report");
+  if (result.strictFailed) {
+    const summary = result.manifest.strictSummary;
+    log.error(
+      `strict mode failed with ${result.strictIssues.length} issue(s); minimum confidence: ${reportOptions.minConfidence ?? "medium"}`,
+      "answer-report:strict",
+    );
+    if (summary) {
+      log.error(
+        `STRICT_SUMMARY question_count=${summary.questionCount} failed_question_count=${summary.failedQuestionCount} issue_count=${summary.issueCount} min_confidence=${reportOptions.minConfidence ?? "medium"}`,
+        "answer-report:strict",
+      );
+      for (const category of summary.categories) {
+        log.error(
+          `STRICT_CATEGORY category=${category.category} count=${category.count}`,
+          "answer-report:strict",
+        );
       }
     }
-
-    const analyzeInput = resolveAnalyzeInput(
-      {
-        entry: values.entry as string | undefined,
-        depth: values.depth as string | undefined,
-        maxFiles: values["max-files"] as string | undefined,
-        include: values.include as string | undefined,
-        exclude: values.exclude as string | undefined,
-      },
-      analyzeConfig,
-    );
-
-    if (analyzeInput.entries.length === 0) {
-      log.error("missing required --entry <path>", "analyze");
-      process.exit(1);
-    }
-
-    const depthValue = analyzeInput.depth === undefined ? 2 : Number(analyzeInput.depth);
-    if (!Number.isInteger(depthValue) || depthValue < 0) {
-      log.error(`invalid analyze depth: ${analyzeInput.depth}`, "analyze");
-      process.exit(1);
-    }
-    const maxFilesValue =
-      analyzeInput.maxFiles === undefined
-        ? DEFAULT_MAX_SCOPED_FILES
-        : Number(analyzeInput.maxFiles);
-    if (!Number.isInteger(maxFilesValue) || maxFilesValue < 1) {
-      log.error(`invalid analyze maxFiles: ${analyzeInput.maxFiles}`, "analyze");
-      process.exit(1);
-    }
-
-    if (analyzeInput.entries.length === 1) {
-      const entry = analyzeInput.entries[0]!;
-      log.step(`analyze ${entry.path} depth=${depthValue}`, "init");
-      const result = await runAnalyzeEntry(entry, {
-        depth: depthValue,
-        include: analyzeInput.include,
-        exclude: analyzeInput.exclude,
-        maxFiles: maxFilesValue,
-        force: {
-          forceAll: force,
-          forceStage,
-        },
-      });
-      log.done(
-        `${result.counts.files} files, ${result.counts.symbols} symbols, ${result.counts.repoIndexFiles} repo-index files, ${result.counts.edges} edges, ${result.counts.diagrams} diagrams, ${result.counts.insights} insights`,
-        "summary",
+    for (const issue of result.strictIssues) {
+      log.error(
+        `STRICT_FAILURE question_digest=${issue.questionDigest} category=${issue.category} detail=${issue.detail.replace(/\s+/g, " ").trim()}`,
+        "answer-report:strict",
       );
-      log.done(result.workdir.repoIndexFile(), "repo-index");
-      log.done(result.workdir.graphFile(), "graph");
-      log.done(result.workdir.diagrams(), "diagrams");
-      log.done(result.workdir.insightsFile(), "insights");
-      log.done(result.workdir.finalIndexReport(), "start-here");
-      log.done(result.workdir.finalReport(), "detail-report");
-      return;
     }
+    process.exit(1);
+  }
+}
 
-    log.step(
-      `analyze ${analyzeInput.entries.length} entries depth=${depthValue}`,
-      "init",
-    );
-    const manifest = await runAnalyzeMulti(analyzeInput, {
+async function handleKnowledgeUpdate(values: CliValues, force: boolean): Promise<void> {
+  let updateOptions: ReturnType<typeof resolveKnowledgeUpdateOptions>;
+  try {
+    updateOptions = resolveKnowledgeUpdateOptions({
+      "repo-root": values["repo-root"],
+      "knowledge-root": values["knowledge-root"],
+      from: values.from,
+      to: values.to,
+      "batch-size": values["batch-size"],
+      "dry-run": values["dry-run"] === true,
+      apply: values.apply === true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message, "knowledge:update");
+    process.exit(1);
+  }
+
+  const result = await runKnowledgeUpdate({
+    repoRoot: updateOptions.repoRoot,
+    knowledgeRoot: updateOptions.knowledgeRoot,
+    from: updateOptions.from,
+    to: updateOptions.to,
+    batchSize: updateOptions.batchSize,
+    dryRun: updateOptions.dryRun,
+    force,
+  });
+  log.done(result.reportPath, "update-report");
+  log.done(result.reportMarkdownPath, "update-report-md");
+}
+
+async function handleKnowledgeDiff(values: CliValues): Promise<void> {
+  let diffOptions: ReturnType<typeof resolveKnowledgeDiffOptions>;
+  try {
+    diffOptions = resolveKnowledgeDiffOptions({
+      base: values.base,
+      head: values.head,
+      strict: values.strict === true,
+      json: values.json === true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message, "knowledge:diff");
+    process.exit(1);
+  }
+
+  const result = await runKnowledgeDiff(diffOptions);
+  if (diffOptions.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(formatDiffMarkdown(result));
+  }
+  log.done(`verdict: ${result.verdict} (score: ${result.score})`, "knowledge:diff");
+  if (diffOptions.strict && result.verdict === "regressed") {
+    log.error("regression detected in strict diff mode", "knowledge:diff");
+    process.exit(1);
+  }
+}
+
+async function handleKnowledgeDiffHistory(values: CliValues): Promise<void> {
+  let historyOptions: ReturnType<typeof resolveKnowledgeDiffHistoryOptions>;
+  try {
+    historyOptions = resolveKnowledgeDiffHistoryOptions({
+      base: values.base,
+      head: values.head,
+      history: values.history,
+      json: values.json === true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(message, "knowledge:diff-history");
+    process.exit(1);
+  }
+
+  if (historyOptions.basePath && historyOptions.headPath) {
+    const history = await runKnowledgeDiffHistory({
+      basePath: historyOptions.basePath,
+      headPath: historyOptions.headPath,
+      historyPath: historyOptions.historyPath,
+    });
+    if (historyOptions.json) {
+      console.log(JSON.stringify(history, null, 2));
+    } else {
+      console.log(formatDiffHistoryMarkdown(history));
+    }
+  } else {
+    const history = await loadDiffHistory(historyOptions.historyPath);
+    if (historyOptions.json) {
+      console.log(JSON.stringify(history, null, 2));
+    } else {
+      console.log(formatDiffHistoryMarkdown(history));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Analyze command handler
+// ---------------------------------------------------------------------------
+
+async function handleAnalyze(
+  values: CliValues,
+  force: boolean,
+  forceStage: string | undefined,
+): Promise<void> {
+  const configPath = values.config;
+  let analyzeConfig = {};
+  if (configPath) {
+    try {
+      analyzeConfig = await loadAnalyzeConfig(configPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(message, "analyze");
+      process.exit(1);
+    }
+  }
+
+  const analyzeInput = resolveAnalyzeInput(
+    {
+      entry: values.entry,
+      depth: values.depth,
+      maxFiles: values["max-files"],
+      include: values.include,
+      exclude: values.exclude,
+    },
+    analyzeConfig,
+  );
+
+  if (analyzeInput.entries.length === 0) {
+    log.error("missing required --entry <path>", "analyze");
+    process.exit(1);
+  }
+
+  const depthValue = analyzeInput.depth === undefined ? 2 : Number(analyzeInput.depth);
+  if (!Number.isInteger(depthValue) || depthValue < 0) {
+    log.error(`invalid analyze depth: ${analyzeInput.depth}`, "analyze");
+    process.exit(1);
+  }
+  const maxFilesValue =
+    analyzeInput.maxFiles === undefined
+      ? DEFAULT_MAX_SCOPED_FILES
+      : Number(analyzeInput.maxFiles);
+  if (!Number.isInteger(maxFilesValue) || maxFilesValue < 1) {
+    log.error(`invalid analyze maxFiles: ${analyzeInput.maxFiles}`, "analyze");
+    process.exit(1);
+  }
+
+  if (analyzeInput.entries.length === 1) {
+    const entry = analyzeInput.entries[0]!;
+    log.step(`analyze ${entry.path} depth=${depthValue}`, "init");
+    const result = await runAnalyzeEntry(entry, {
       depth: depthValue,
+      include: analyzeInput.include,
+      exclude: analyzeInput.exclude,
       maxFiles: maxFilesValue,
       force: {
         forceAll: force,
         forceStage,
       },
     });
-    const failed = manifest.entries.filter((entry) => entry.status === "failed");
-    const succeeded = manifest.entries.length - failed.length;
-
-    log.done(`${succeeded}/${manifest.entries.length} entries succeeded`, "summary");
-    for (const entry of manifest.entries) {
-      log.done(`${entry.name}: ${entry.status}`, "entry");
-      if (entry.error) {
-        log.error(entry.error, `entry:${entry.name}`);
-      }
-    }
     log.done(
-      `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/manifest.json`,
-      "manifest",
+      `${result.counts.files} files, ${result.counts.symbols} symbols, ${result.counts.repoIndexFiles} repo-index files, ${result.counts.edges} edges, ${result.counts.diagrams} diagrams, ${result.counts.insights} insights`,
+      "summary",
     );
-    log.done(
-      `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/index.md`,
-      "start-here",
-    );
-    if (failed.length > 0) {
-      process.exit(1);
-    }
+    log.done(result.workdir.repoIndexFile(), "repo-index");
+    log.done(result.workdir.graphFile(), "graph");
+    log.done(result.workdir.diagrams(), "diagrams");
+    log.done(result.workdir.insightsFile(), "insights");
+    log.done(result.workdir.finalIndexReport(), "start-here");
+    log.done(result.workdir.finalReport(), "detail-report");
     return;
   }
 
-  const prArg = subcmd;
-  if (cmd !== "review" || !prArg) usage();
+  log.step(
+    `analyze ${analyzeInput.entries.length} entries depth=${depthValue}`,
+    "init",
+  );
+  const manifest = await runAnalyzeMulti(analyzeInput, {
+    depth: depthValue,
+    maxFiles: maxFilesValue,
+    force: {
+      forceAll: force,
+      forceStage,
+    },
+  });
+  const failed = manifest.entries.filter((entry) => entry.status === "failed");
+  const succeeded = manifest.entries.length - failed.length;
 
-  const pr = Number(prArg);
-  if (!Number.isInteger(pr) || pr <= 0) {
-    log.error(`invalid PR number: ${prArg}`);
+  log.done(`${succeeded}/${manifest.entries.length} entries succeeded`, "summary");
+  for (const entry of manifest.entries) {
+    log.done(`${entry.name}: ${entry.status}`, "entry");
+    if (entry.error) {
+      log.error(entry.error, `entry:${entry.name}`);
+    }
+  }
+  log.done(
+    `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/manifest.json`,
+    "manifest",
+  );
+  log.done(
+    `${config.workdirRoot}/analyze/multi/${manifest.configDigest}/index.md`,
+    "start-here",
+  );
+  if (failed.length > 0) {
     process.exit(1);
   }
+}
 
+// ---------------------------------------------------------------------------
+// Review command handler + helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Identifies reviewers with a 0% success rate across 3+ routes.
+ * These are systematically broken (e.g. malformed persona) rather than
+ * failing on specific files, so retrying them would just waste API calls.
+ */
+function detectBrokenReviewers(
+  routes: ReadonlyArray<{ file: string; reviewers: string[] }>,
+  reviews: ReadonlyArray<{ file: string; reviewer: string }>,
+): Set<string> {
+  const reviewerStats = new Map<string, { success: number; total: number }>();
+  for (const route of routes) {
+    for (const reviewer of route.reviewers) {
+      const stats = reviewerStats.get(reviewer) ?? { success: 0, total: 0 };
+      stats.total++;
+      if (reviews.some((r) => r.file === route.file && r.reviewer === reviewer)) {
+        stats.success++;
+      }
+      reviewerStats.set(reviewer, stats);
+    }
+  }
+  const broken = new Set<string>();
+  for (const [reviewer, stats] of reviewerStats) {
+    if (stats.success === 0 && stats.total >= 3) {
+      log.warn(
+        `reviewer "${reviewer}" 0/${stats.total} success — skipping retries`,
+        "retry",
+      );
+      broken.add(reviewer);
+    }
+  }
+  return broken;
+}
+
+async function handleReview(
+  values: CliValues,
+  pr: number,
+  isForced: (s: string) => boolean,
+): Promise<void> {
   const wd = new Workdir(pr);
   await wd.ensureAll();
 
@@ -543,28 +571,7 @@ async function main() {
   // Stage 5: coverage check + retry loop
   let coverage = await runCoverage(wd, reviews, unitsByFile);
 
-  // Detect systematically-broken reviewers (0% success rate)
-  const reviewerStats = new Map<string, { success: number; total: number }>();
-  for (const route of routing.routes) {
-    for (const reviewer of route.reviewers) {
-      const stats = reviewerStats.get(reviewer) ?? { success: 0, total: 0 };
-      stats.total++;
-      if (reviews.some((r) => r.file === route.file && r.reviewer === reviewer)) {
-        stats.success++;
-      }
-      reviewerStats.set(reviewer, stats);
-    }
-  }
-  const brokenReviewers = new Set<string>();
-  for (const [reviewer, stats] of reviewerStats) {
-    if (stats.success === 0 && stats.total >= 3) {
-      log.warn(
-        `reviewer "${reviewer}" 0/${stats.total} success — skipping retries`,
-        "retry",
-      );
-      brokenReviewers.add(reviewer);
-    }
-  }
+  const brokenReviewers = detectBrokenReviewers(routing.routes, reviews);
 
   let iter = 0;
   while (iter < config.maxCoverageIterations && coverage.some((c) => !c.complete)) {
@@ -622,6 +629,88 @@ async function main() {
       `${(metrics.totalDurationMs / 1000).toFixed(1)}s total`,
     "metrics",
   );
+}
+
+// ---------------------------------------------------------------------------
+// CLI entrypoint — parses args and dispatches to the appropriate handler
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const { values, positionals } = parseArgs({
+    args: Bun.argv.slice(2),
+    options: {
+      force: { type: "boolean", default: false },
+      "force-stage": { type: "string" },
+      post: { type: "boolean", default: false },
+      edit: { type: "boolean", default: false },
+      resume: { type: "boolean", default: false },
+      entry: { type: "string" },
+      config: { type: "string" },
+      depth: { type: "string" },
+      "max-files": { type: "string" },
+      include: { type: "string" },
+      exclude: { type: "string" },
+      "analyze-root": { type: "string" },
+      "docs-root": { type: "string" },
+      "knowledge-root": { type: "string" },
+      "repo-root": { type: "string" },
+      "code-root": { type: "string" },
+      from: { type: "string" },
+      to: { type: "string" },
+      "batch-size": { type: "string" },
+      "dry-run": { type: "boolean" },
+      apply: { type: "boolean", default: false },
+      question: { type: "string" },
+      "questions-file": { type: "string" },
+      "answer-out": { type: "string" },
+      "out-dir": { type: "string" },
+      top: { type: "string" },
+      "emit-json": { type: "boolean", default: false },
+      strict: { type: "boolean", default: false },
+      "min-confidence": { type: "string" },
+      "answers-dir": { type: "string" },
+      "report-out": { type: "string" },
+      base: { type: "string" },
+      head: { type: "string" },
+      history: { type: "string" },
+      json: { type: "boolean", default: false },
+      out: { type: "string" },
+      help: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+    strict: false,
+  });
+
+  if (values.help || positionals.length === 0) usage();
+
+  const [cmd, subcmd] = positionals;
+  const cliValues = values as CliValues;
+  const force = cliValues.force === true;
+  const forceStage = cliValues["force-stage"];
+  const isForced = (s: string) => force || forceStage === s;
+
+  if (cmd === "knowledge") {
+    if (subcmd === "build") return handleKnowledgeBuild(cliValues, force);
+    if (subcmd === "answer") return handleKnowledgeAnswer(cliValues, force);
+    if (subcmd === "answer-report") return handleKnowledgeAnswerReport(cliValues, force);
+    if (subcmd === "update") return handleKnowledgeUpdate(cliValues, force);
+    if (subcmd === "diff") return handleKnowledgeDiff(cliValues);
+    if (subcmd === "diff-history") return handleKnowledgeDiffHistory(cliValues);
+    usage();
+  }
+
+  if (cmd === "analyze") return handleAnalyze(cliValues, force, forceStage);
+
+  const prArg = subcmd;
+  if (cmd !== "review" || !prArg) usage();
+
+  const pr = Number(prArg);
+  if (!Number.isInteger(pr) || pr <= 0) {
+    log.error(`invalid PR number: ${prArg}`);
+    process.exit(1);
+  }
+
+  return handleReview(cliValues, pr, isForced);
 }
 
 main().catch((err: Error) => {
